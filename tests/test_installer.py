@@ -20,6 +20,7 @@ assert spec.loader is not None
 sys.modules[spec.name] = mod
 spec.loader.exec_module(mod)
 
+
 class InstallerPlanTests(unittest.TestCase):
     def test_check_plan_includes_state_file(self):
         with tempfile.TemporaryDirectory() as td:
@@ -95,11 +96,13 @@ class InstallerPlanTests(unittest.TestCase):
             plan = mod.build_install_plan(root)
             real_write = mod.atomic_write
             calls = {"n": 0}
+
             def flaky(path, content, mode=None):
                 calls["n"] += 1
                 if calls["n"] == 3:
                     raise OSError("synthetic failure")
                 return real_write(path, content, mode)
+
             with mock.patch.object(mod, "atomic_write", side_effect=flaky):
                 with self.assertRaises(mod.InstallError):
                     mod.apply_plan(plan)
@@ -189,7 +192,7 @@ class InstallerPlanTests(unittest.TestCase):
             self.assertEqual((root / "AGENTS.md").read_text(), "# Existing\n")
             self.assertFalse((root / ".codex/.agent-foundry.json").exists())
             self.assertFalse((root / ".codex/agents/reviewer.toml").exists())
-            self.assertFalse((root / ".codex/agents/repo_explorer.toml").exists())
+            self.assertFalse((root / ".codex/agents/explorer.toml").exists())
             cfg = root / ".codex/config.toml"
             self.assertFalse(cfg.exists())
 
@@ -202,6 +205,7 @@ class InstallerPlanTests(unittest.TestCase):
             mod.apply_plan(mod.build_install_plan(root))
             mod.apply_plan(mod.build_uninstall_plan(root))
             self.assertIn("max_concurrent_threads_per_session = 7", cfg.read_text())
+
 
 class VerifyTests(unittest.TestCase):
     def run_verify(self, root: Path):
@@ -236,6 +240,7 @@ class VerifyTests(unittest.TestCase):
             result = self.run_verify(root)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("drifted", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

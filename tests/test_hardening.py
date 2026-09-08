@@ -95,6 +95,30 @@ class InstallerHardeningTests(unittest.TestCase):
             self.assertIn("not valid UTF-8", result.stdout)
             self.assertNotIn("Traceback", result.stderr)
 
+    def test_installer_rejects_non_integer_state_version(self):
+        for bad in (True, 2.0, "2"):
+            with self.subTest(version=bad), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                mod.apply_plan(mod.build_install_plan(root))
+                state_path = root / ".codex/.agent-foundry.json"
+                state = json.loads(state_path.read_text())
+                state["version"] = bad
+                state_path.write_text(json.dumps(state))
+                with self.assertRaisesRegex(mod.InstallError, "unsupported Foundry state version"):
+                    mod.build_install_plan(root)
+
+    def test_verifier_rejects_runtime_fingerprint_mismatch(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            mod.apply_plan(mod.build_install_plan(root))
+            state_path = root / ".codex/.agent-foundry.json"
+            state = json.loads(state_path.read_text())
+            state["runtime_sha256"] = "0" * 64
+            state_path.write_text(json.dumps(state))
+            result = subprocess.run([sys.executable, str(VERIFY), str(root)], text=True, capture_output=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("runtime_sha256 does not match the bundled runtime", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

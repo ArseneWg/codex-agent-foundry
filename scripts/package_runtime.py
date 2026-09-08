@@ -14,9 +14,13 @@ ASSETS = ROOT / ".agents" / "skills" / "install-codex-agent-foundry" / "assets" 
 FILES = [
     "AGENTS.fragment.md",
     ".codex/config.toml",
-    ".codex/agents/repo_explorer.toml",
+    ".codex/agents/explorer.toml",
     ".codex/agents/reviewer.toml",
 ]
+LEGACY_PACKAGED_FILES = [
+    ".codex/agents/repo_explorer.toml",
+]
+
 
 def copy_runtime() -> None:
     for rel in FILES:
@@ -24,6 +28,11 @@ def copy_runtime() -> None:
         dst = ASSETS / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
+    for rel in LEGACY_PACKAGED_FILES:
+        path = ASSETS / rel
+        if path.exists() or path.is_symlink():
+            path.unlink()
+
 
 def check_runtime() -> list[str]:
     errors: list[str] = []
@@ -36,7 +45,11 @@ def check_runtime() -> list[str]:
             errors.append(f"missing packaged asset: {rel}")
         elif not filecmp.cmp(src, dst, shallow=False):
             errors.append(f"packaged asset drift: {rel}")
+    for rel in LEGACY_PACKAGED_FILES:
+        if (ASSETS / rel).exists() or (ASSETS / rel).is_symlink():
+            errors.append(f"stale packaged legacy asset: {rel}")
     return errors
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Package Foundry runtime into the self-contained installer Skill.")
@@ -53,6 +66,7 @@ def main() -> int:
     copy_runtime()
     print("Runtime packaged into installer Skill assets.")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

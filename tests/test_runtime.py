@@ -10,17 +10,21 @@ RUNTIME = ROOT / "runtime"
 SKILL = ROOT / ".agents/skills/install-codex-agent-foundry"
 PACKAGE = ROOT / "scripts/package_runtime.py"
 
+
 class RuntimeContractTests(unittest.TestCase):
     def test_runtime_toml_is_valid_and_roles_are_safe_defaults(self):
         config = tomllib.loads((RUNTIME / ".codex/config.toml").read_text())
         value = config["agents"]["max_concurrent_threads_per_session"]
         self.assertIsInstance(value, int)
         self.assertGreaterEqual(value, 1)
-        for name in ("repo_explorer.toml", "reviewer.toml"):
+        for name in ("explorer.toml", "reviewer.toml"):
             profile = tomllib.loads((RUNTIME / ".codex/agents" / name).read_text())
-            self.assertEqual(profile["sandbox_mode"], "read-only")
-            self.assertIn("Do not", profile["developer_instructions"])
+            self.assertNotIn("sandbox_mode", profile)
+            self.assertIn("Do not edit files", profile["developer_instructions"])
             self.assertIn("spawn subagents", profile["developer_instructions"])
+        explorer = tomllib.loads((RUNTIME / ".codex/agents/explorer.toml").read_text())
+        self.assertEqual(explorer["name"], "explorer")
+        self.assertFalse((RUNTIME / ".codex/agents/repo_explorer.toml").exists())
 
     def test_runtime_policy_contains_core_orchestration_invariants(self):
         policy = (RUNTIME / "AGENTS.fragment.md").read_text()
@@ -32,6 +36,8 @@ class RuntimeContractTests(unittest.TestCase):
             "one-level fan-out",
             "Agent agreement is not evidence of correctness",
             "stop condition",
+            "overrides Codex's built-in `explorer`",
+            "not an independent per-role sandbox boundary",
         ]
         for text in required:
             self.assertIn(text, policy)
@@ -60,7 +66,7 @@ class RuntimeContractTests(unittest.TestCase):
         }
         self.assertTrue(required.issubset(ids))
         expected_keys = {
-            "repo_explorer",
+            "explorer",
             "reviewer",
             "worker",
             "temporary_verifier",
@@ -70,8 +76,8 @@ class RuntimeContractTests(unittest.TestCase):
         for scenario in payload["scenarios"]:
             self.assertEqual(set(scenario["expected"]), expected_keys)
         scenarios = {s["id"]: s for s in payload["scenarios"]}
-        self.assertFalse(scenarios["trivial-change"]["expected"]["repo_explorer"])
-        self.assertTrue(scenarios["unclear-cross-module-bug"]["expected"]["repo_explorer"])
+        self.assertFalse(scenarios["trivial-change"]["expected"]["explorer"])
+        self.assertTrue(scenarios["unclear-cross-module-bug"]["expected"]["explorer"])
         self.assertTrue(scenarios["bounded-implementation"]["expected"]["worker"])
         self.assertTrue(scenarios["noisy-verification"]["expected"]["temporary_verifier"])
         self.assertFalse(scenarios["noisy-verification"]["expected"]["reviewer"])
@@ -85,9 +91,10 @@ class RuntimeContractTests(unittest.TestCase):
         assert spec.loader is not None
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
-        for filename in ("repo_explorer.toml", "reviewer.toml"):
+        for filename in ("explorer.toml", "reviewer.toml"):
             runtime_profile = tomllib.loads((RUNTIME / ".codex/agents" / filename).read_text())
             self.assertEqual(module.bundled_profile_model(filename), runtime_profile["model"])
+
 
 if __name__ == "__main__":
     unittest.main()
