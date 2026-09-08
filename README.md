@@ -312,15 +312,30 @@ python3 scripts/package_runtime.py --check
 
 CI fails if the generated package drifts from `runtime/`.
 
+## Requirements
+
+The installer and verifier require **Python 3.11 or newer** because they use the standard-library `tomllib` parser.
+
+Ubuntu 22.04 commonly ships Python 3.10 by default. On that platform, invoke an explicit Python 3.11+ interpreter instead of relying on `python3` if it still resolves to 3.10.
+
+Both entry scripts check the Python version **before** importing `tomllib`, so older interpreters produce a clear error instead of `ModuleNotFoundError`.
+
 ## Install into a repository
 
 From a clone of Foundry:
 
 ```bash
+# Preview the complete plan. Selected models and reasoning effort are shown here.
 python3 .agents/skills/install-codex-agent-foundry/scripts/install.py /path/to/repo --check
+
+# Apply the same plan.
 python3 .agents/skills/install-codex-agent-foundry/scripts/install.py /path/to/repo
+
+# Verify files, state, TOML, profiles, and drift.
 python3 .agents/skills/install-codex-agent-foundry/scripts/verify.py /path/to/repo
 ```
+
+After a successful install, start a **new Codex session in the target project** so project-level `AGENTS.md` and `.codex/agents/` are loaded from a fresh session.
 
 After installation, the target repository contains roughly:
 
@@ -329,13 +344,71 @@ your-project/
 ├── AGENTS.md                  # existing content + Foundry managed block
 └── .codex/
     ├── config.toml
-    ├── .agent-foundry.json    # Foundry ownership/version/model state
+    ├── .agent-foundry.json    # ownership, runtime provenance, model state
     └── agents/
         ├── repo_explorer.toml
         └── reviewer.toml
 ```
 
 The installer follows **plan → apply**. `--check` builds the same complete plan a successful apply would execute. Conflicts block the whole apply before any write; mid-apply failures roll back changed paths.
+
+Idempotent output uses current-state wording, for example:
+
+```text
+unchanged AGENTS.md: managed block already current
+```
+
+### Selected models in dry-run output
+
+The plan prints the effective role selections before any write, for example:
+
+```text
+Selected agents:
+- repo_explorer: gpt-5.6-terra / medium
+- reviewer: gpt-5.6 / high
+```
+
+This lets you notice a model mismatch before applying the configuration. It does **not** prove that your account can use those models.
+
+### Optional runtime check
+
+Normal `verify.py` is deterministic and local: it verifies structure, state, TOML syntax, profile content, and drift.
+
+For an additional environment check:
+
+```bash
+python3 .agents/skills/install-codex-agent-foundry/scripts/verify.py \
+  /path/to/repo \
+  --runtime-check
+```
+
+The optional runtime check additionally:
+
+- verifies `codex` is available on `PATH`;
+- runs `codex --version` in the target repository;
+- reports that strict TOML parsing passed for the project config and Foundry profiles;
+- prints the selected Explorer/Reviewer model and reasoning effort;
+- explicitly reports that **account-level model availability is not verified**.
+
+Foundry does not currently claim a stronger Codex schema/session validation than this because it does not depend on an undocumented or unstable non-interactive config-validation command.
+
+### Installation provenance
+
+`.codex/.agent-foundry.json` records:
+
+```json
+{
+  "runtime_version": "1",
+  "source_revision": "<git-commit-or-unknown>",
+  "runtime_sha256": "<deterministic-runtime-content-hash>"
+}
+```
+
+`source_revision` is best-effort. It is a Git commit when the installer runs from a Git checkout, and may be `unknown` when the Skill was distributed without `.git` metadata.
+
+`runtime_sha256` is the authoritative content fingerprint in that case: it hashes the packaged runtime files deterministically and is useful for upgrades, audits, and reproducing an installation.
+
+Existing pre-provenance state remains readable by the installer so it can be upgraded. The verifier asks you to rerun the installer when provenance fields are missing.
 
 ### Optional model overrides
 
@@ -368,6 +441,8 @@ python3 scripts/package_runtime.py --check
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q .agents/skills/install-codex-agent-foundry/scripts scripts tests
 ```
+
+CI runs the full suite on Python 3.11, 3.12, and 3.13, plus a Python 3.10 smoke job that verifies both entry scripts fail with the documented Python 3.11+ message rather than a traceback.
 
 ## Current Codex assumptions
 

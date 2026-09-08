@@ -25,3 +25,31 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Compile Python sources
         run: python -m compileall -q .agents/skills/install-codex-agent-foundry/scripts scripts tests
+
+  python310-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+      - name: Installer reports supported Python version
+        shell: bash
+        run: |
+          set +e
+          output="$(python .agents/skills/install-codex-agent-foundry/scripts/install.py --help 2>&1)"
+          status=$?
+          set -e
+          test "$status" -eq 2
+          grep -F "requires Python 3.11+" <<<"$output"
+          test "$(grep -c 'Traceback' <<<"$output")" -eq 0
+      - name: Verifier reports supported Python version
+        shell: bash
+        run: |
+          set +e
+          output="$(python .agents/skills/install-codex-agent-foundry/scripts/verify.py --help 2>&1)"
+          status=$?
+          set -e
+          test "$status" -eq 2
+          grep -F "requires Python 3.11+" <<<"$output"
+          test "$(grep -c 'Traceback' <<<"$output")" -eq 0

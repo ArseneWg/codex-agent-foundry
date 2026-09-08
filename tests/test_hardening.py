@@ -18,6 +18,7 @@ assert spec.loader is not None
 sys.modules[spec.name] = mod
 spec.loader.exec_module(mod)
 
+
 class InstallerHardeningTests(unittest.TestCase):
     def test_uninstall_restores_existing_config_without_agents_table(self):
         cases = ["", 'model = "example"\n', '[features]\nfoo = true\n']
@@ -71,7 +72,7 @@ class InstallerHardeningTests(unittest.TestCase):
             state_path.write_text(json.dumps(state))
             result = subprocess.run([sys.executable, str(VERIFY), str(root)], text=True, capture_output=True, check=False)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("missing required fields", result.stdout)
+            self.assertIn("missing provenance fields", result.stdout)
 
     def test_verify_rejects_managed_file_path_that_is_directory(self):
         with tempfile.TemporaryDirectory() as td:
@@ -93,6 +94,7 @@ class InstallerHardeningTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("not valid UTF-8", result.stdout)
             self.assertNotIn("Traceback", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
