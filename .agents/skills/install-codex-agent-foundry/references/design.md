@@ -2,7 +2,7 @@
 
 ## Product boundary
 
-Codex Agent Foundry's primary product is the runtime collaboration policy under `runtime/`: how Root, stable behaviorally no-write specialists, and on-demand workers coordinate, own writes, delegate, and validate completion.
+Codex Agent Foundry's primary product is the runtime collaboration policy under `runtime/`: how Root, stable specialist profiles, and on-demand workers coordinate, own writes, delegate, and validate completion.
 
 The installer Skill is the delivery/lifecycle layer. Its packaged `assets/project/` directory is generated from `runtime/` and must never become an independent source of truth.
 
@@ -28,7 +28,7 @@ Current workload-aware baseline:
 
 This replaces the v1 design where Foundry introduced a parallel role named `repo_explorer` next to Codex's built-in `explorer`.
 
-### Why the role is now named `explorer`
+### Why the role is named `explorer`
 
 Codex already has the correct semantic category: read-heavy codebase exploration. Current Codex agent configuration supports project custom agents in `.codex/agents/` and gives a custom agent precedence when it has the same name as a built-in role.
 
@@ -38,35 +38,37 @@ Foundry therefore installs:
 .codex/agents/explorer.toml
 ```
 
-instead of maintaining two nearly synonymous active role names.
-
-The project override pins a narrower contract:
+The project override pins:
 
 - `gpt-5.6-terra` / `medium` by default;
-- no-edit behavioral contract;
+- a no-edit behavioral contract;
 - real execution-path tracing with file/symbol evidence;
 - facts separated from hypotheses;
-- smallest likely change boundary;
-- no edits, speculative refactors, or recursive spawning;
+- the smallest likely change boundary;
+- no speculative refactors or recursive spawning;
 - concise findings/risks/unknowns returned to Root.
 
-The benefit is native routing vocabulary plus deterministic project policy. The maintenance cost is intentional dependence on the documented same-name override behavior.
+The benefit is native routing vocabulary plus deterministic project policy.
 
-### Permission and sandbox boundary
+## Permission, write, and artifact boundaries
 
-Current Codex role application does not apply `sandbox_mode` as a separate role-level filesystem sandbox. The role layer applies bounded fields such as model, reasoning effort, developer instructions, features, and skills; spawn runtime overrides then copy the live parent permission profile into the child.
+Current Codex role application does not create a separate child filesystem sandbox from `sandbox_mode` in a role file. Spawned children retain the live parent permission/sandbox profile for authority-sensitive settings.
 
-Therefore Explorer, Verifier, and Reviewer are **behaviorally no-write**: their policy and developer instructions prohibit edits, but they do not receive an independently enforced read-only filesystem merely from the role TOML. Hard isolation belongs at the parent session/runtime permission layer. This distinction is part of Foundry's safety model.
+Explorer and Reviewer are therefore **behaviorally no-write**. Verifier is slightly different: builds and tests frequently write caches, generated build products, coverage data, device/log captures, or redirected stdout/stderr. Treating Verifier as literally filesystem-no-write would contradict its execution contract.
+
+Verifier is instead **behaviorally source-preserving**:
+
+- it must not intentionally modify source, project configuration, or user-owned content;
+- it must not fix failures;
+- validation commands may create their normal transient build/test artifacts and caches;
+- designated validation log files are allowed, preferably outside source-owned paths;
+- hard filesystem isolation still comes from the parent session/runtime, not the role TOML.
 
 Relevant Codex sources: [`agent/role.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/agent/role.rs) and [`multi_agents_common.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/multi_agents_common.rs).
 
-### Model-cost rationale
+## Model-cost and role-selection policy
 
-Exploration often consists of locating symbols, tracing call paths, identifying tests/dependencies/ownership, and collecting evidence. It usually does not require the same expensive reasoning profile as Root or Reviewer.
-
-Pinning only `explorer` avoids using `[agents].default_subagent_model` to downgrade unrelated subagents such as `worker`.
-
-Current workload-aware baseline:
+Current baseline:
 
 ```text
 Root       → user/current session model
@@ -76,29 +78,42 @@ reviewer   → gpt-5.6 / high
 worker     → Codex built-in / mission-dependent
 ```
 
-Verifier is pinned independently instead of using `[agents].default_subagent_model`, because a global low-cost default could unintentionally downgrade `worker` or future unpinned roles. Some Codex releases have had child-model availability/routing differences; `--verifier-model gpt-5.6-terra` is the compatibility fallback when Luna cannot be spawned.
+Foundry pins specialist models independently instead of using `[agents].default_subagent_model`, because a global cheap default could unintentionally downgrade `worker` or future unpinned roles.
 
-Role migration and reasoning-quality tuning are intentionally separate changes. `medium → low` should be evaluated independently rather than coupled to the role rename.
+### Spawn persistent profiles by role
+
+Persistent Foundry profiles should be selected by role (`agent_type`) and their role files should own their configured model/reasoning effort. Root should not pass spawn-time `model` or reasoning-effort overrides merely to restate values already pinned by a persistent profile.
+
+This matters especially for Verifier. Some MultiAgent V2 clients/model catalogs have rejected `gpt-5.6-luna` when Luna is passed as an **explicit spawn-time model override**. Current Codex main validates an explicit spawn model against the MultiAgent-compatible model list before applying the selected role; the role is then applied as a later configuration layer.
+
+Foundry therefore uses:
+
+```text
+agent_type = "verifier"
+model      = omitted at spawn time
+```
+
+and lets `verifier.toml` request `gpt-5.6-luna`.
+
+If an installed client cannot spawn the configured Verifier role itself, Foundry does not silently switch the child to another model mid-task. Root should run the validation directly for that session, or the installation can be explicitly changed with:
+
+```bash
+--verifier-model gpt-5.6-terra
+```
+
+A silent model fallback would make cost/quality behavior difficult to audit and could hide a client compatibility regression.
 
 ### Requested versus resolved model
 
-The profile is authoritative for **Foundry's requested configuration**, not proof of the actual model resolved by every Codex client/release path.
+A role profile records **Foundry's requested configuration**, not proof of the model actually resolved by every Codex client/release path.
 
-Model-routing regressions have existed in some Codex releases. Therefore Foundry must distinguish:
-
-```text
-configured model/effort
-from
-observed resolved child model/effort
-```
-
-`verify.py --runtime-check` currently verifies CLI presence/version and reports the configured role model/effort. It explicitly does not claim observed spawned-child model resolution. A stronger check should only be introduced when the installed Codex exposes stable machine-readable spawned-thread metadata.
+`verify.py --runtime-check` verifies CLI presence/version and reports the configured role model/effort. It does not claim account entitlement, successful role spawn, or observed child model resolution. A stronger runtime assertion should only be added when Codex exposes stable machine-readable child configuration metadata suitable for that check.
 
 ## Why Reviewer remains custom
 
-Codex's `/review` / `codex review` is a native user-triggered review workflow. Foundry's `reviewer` serves a different orchestration boundary: Root can spawn it inside a larger autonomous task after material implementation.
+Codex's `/review` / `codex review` is a native user-triggered review workflow. Foundry's `reviewer` serves a different orchestration boundary: Root can spawn it inside a larger task after material implementation.
 
-Its mission is intentionally cold and read-only:
+Its mission is intentionally cold and no-edit:
 
 - correctness/regression/security/concurrency-state risks;
 - meaningful test gaps;
@@ -106,7 +121,7 @@ Its mission is intentionally cold and read-only:
 - no self-fixing;
 - findings and evidence returned to Root.
 
-The value is context separation from the writer, not role count.
+The value is context separation from the writer.
 
 ## Why no permanent Implementer
 
@@ -120,37 +135,66 @@ Foundry defaults to:
 
 A worker mission must define scope, ownership, intended behavior, constraints, acceptance criteria, expected validation, and stop condition. Root must not edit the same checkout while a worker owns it.
 
-## Why Verifier is now persistent
+## Why Verifier is persistent
 
-The original baseline kept verification temporary because repositories use different test runners, browsers, compilers, devices, migrations, and CI systems. Workload telemetry changed the admission decision: the stable part is not the test framework, but the execution contract itself.
+The original baseline kept verification temporary because repositories use different runners, browsers, compilers, devices, migrations, and CI systems. The stable cross-stack behavior is the execution contract itself:
 
-Across the observed workload, long sessions were dominated by shell/read/wait loops, repeated build/check and device polling, and large command output, while tests themselves were a small share of calls. A persistent Verifier therefore owns a narrow cross-stack contract: execute an exact validation scope, aggregate mechanical polling, retain large logs outside model context, return bounded evidence, never edit/fix, and stop when diagnosis is required.
+```text
+exact command/scope + validation baseline
+→ run / wait / aggregate polling
+→ keep large logs outside model context
+→ return bounded evidence
+→ STOP
+```
 
-A single short deterministic command still stays with Root. Spawning a cheap agent is not free; Verifier exists for isolation/noise/latency benefits, not as a blanket wrapper around every shell command.
+A single short deterministic command still stays with Root. Verifier is for long-running, noisy, repetitive, or independently running work where context/noise isolation and a low-cost role justify spawn overhead.
 
-## Why planning and architecture stay with Root
+Verifier does not broaden a failed check into diagnosis or implementation.
 
-Requirements and high-level architecture are tightly coupled to user intent and all accumulated evidence. Adding Planner/Architect layers creates more handoffs and can blur final ownership.
+## Validation evidence must belong to a stable source state
 
-Foundry uses subagents primarily for:
+A PASS is useful only if Root can identify the source state that produced it.
 
-- isolated evidence gathering;
-- independent judgment;
-- bounded execution where ownership is explicit.
+When Verifier runs in the same checkout, Root must keep the **relevant source state stable** from the start of delegated validation until Verifier returns. The mission should identify a validation baseline, such as the relevant commit/working-tree state that Root intends to validate.
 
-## Read concurrency versus write concurrency
+If Root needs to continue changing relevant source while a long verification runs, the validation must run from a separate worktree or another immutable snapshot.
+
+If relevant source state changes underneath same-checkout validation, the evidence is stale regardless of exit status. Root must discard that evidence and rerun the required validation against the final state before completion.
+
+This rule prevents a long-running test process from reading a mixture of pre-edit and post-edit files and then being incorrectly interpreted as validation of the final diff.
+
+Transient test/build artifacts do not violate this rule; intentional source/configuration changes do.
+
+## Minimal history, bounded output, and polling
+
+For self-contained Explorer/Verifier/Reviewer missions, Foundry prefers `fork_turns = "none"` when the installed client reliably supports no-history task delivery. If history is genuinely needed, use the smallest useful positive last-N; full history is exceptional.
+
+If a client release has a no-history delivery bug, fall back to the smallest useful last-N rather than silently returning to full history.
+
+Large command output should remain in files when practical. Repeated device/sysfs/process polling that does not require fresh reasoning should run in one bounded shell/program loop. The same deterministic validation should not be rerun without a relevant state change, a plausibly transient failure, or an explicit reason.
+
+A Verifier result should normally contain:
+
+- command and cwd;
+- validation baseline;
+- PASS/FAIL and exit code;
+- elapsed time when available;
+- concise relevant diagnostics;
+- full-log path when output was redirected.
+
+## Read/source-preserving concurrency versus write concurrency
 
 A central Foundry assumption is:
 
-> **Read concurrency is cheap; write concurrency is expensive.**
-
-Read-only agents can run independently without mutating shared source state. Multiple writers need state coordination, stale-assumption handling, ownership rules, and integration.
+> **Read concurrency is cheap; write concurrency is expensive; validation evidence still needs stable input state.**
 
 Therefore:
 
 - one checkout has one source-code writer at a time;
-- read-only work may run in parallel;
-- substantial parallel writes move to separate Git worktrees;
+- Explorer/Reviewer may run concurrently because they intentionally do not write;
+- Verifier may run concurrently only when relevant source state remains stable;
+- if Root must keep changing relevant source during long verification, use a separate worktree/snapshot;
+- substantial parallel implementation uses separate Git worktrees;
 - Root remains integration owner.
 
 ## Persistent-agent admission criteria
@@ -161,14 +205,14 @@ A new permanent role should satisfy most of these:
 2. stable/narrow mission boundary;
 3. repeatable value rather than one-off convenience;
 4. material benefit from isolated context;
-5. meaningful stable model/effort/tool/MCP configuration using settings Codex actually applies at role scope;
+5. meaningful stable model/effort/tool configuration using settings Codex actually applies at role scope;
 6. clear ownership without unnecessary competing writers;
 7. existing built-ins or temporary delegation are insufficient;
 8. expected benefit can be expressed in eval scenarios.
 
 Role names that merely mirror job titles (`architect`, `implementer`, `tester`, `researcher`) do not qualify by default.
 
-## Spawn discipline
+## Spawn discipline and mission contract
 
 Default to one-level fan-out from Root and fan-in back to Root. Spawn the minimum number of agents that can produce meaningfully independent evidence or latency savings.
 
@@ -183,11 +227,13 @@ Every delegated mission should define:
 - expected return;
 - stop condition.
 
+Verifier missions that depend on repository contents additionally identify the validation baseline and whether transient validation artifacts/logs are allowed.
+
 ## Completion model
 
 Agent agreement is not correctness evidence.
 
-Before completion, Root should inspect the final diff, reconcile material reviewer findings, confirm relevant tests/build/log/source evidence, rerun high-risk checks when delegated evidence is incomplete, and distinguish verified facts from unresolved assumptions.
+Before completion, Root should inspect the final diff, reconcile material reviewer findings, confirm relevant test/build/log/source evidence, verify that delegated validation still corresponds to the final source state, rerun high-risk checks when evidence is incomplete or stale, and distinguish verified facts from unresolved assumptions.
 
 ## Eval contracts
 
@@ -196,77 +242,52 @@ Before completion, Root should inspect the final diff, reconcile material review
 Current baseline expects:
 
 - trivial local change → no unnecessary agent;
+- one short deterministic check → Root directly;
 - unclear cross-module regression → `explorer` + later `reviewer`;
 - bounded mechanical implementation → worker may implement + reviewer;
-- noisy verification → temporary verifier;
+- noisy/repetitive verification → persistent `verifier`;
+- long verification while Root must keep editing relevant source → Verifier on a separate worktree/snapshot;
+- repeated deterministic validation without a state change → avoid rerun;
 - substantial parallel writes → worktrees, not shared-checkout multi-writer.
 
-Repeated forward-eval mismatches should be treated as evidence that the policy needs revision.
+Repeated forward-eval mismatches are evidence that the policy needs revision.
 
-## v1 → v2 Explorer migration
+## Runtime lifecycle: v1, v2, v3
 
 ### v1
 
-Foundry v1 installed:
-
-```text
-.codex/agents/repo_explorer.toml
-```
-
-and state similar to:
-
-```json
-{
-  "version": 1,
-  "managed_agents": ["repo_explorer.toml", "reviewer.toml"],
-  "models": {
-    "repo_explorer": "...",
-    "reviewer": "..."
-  }
-}
-```
+Foundry v1 installed `repo_explorer.toml` + `reviewer.toml`.
 
 ### v2
 
-Foundry v2 installs `explorer.toml` + `reviewer.toml` and records state/runtime version 2. Exact v2 profile fixtures are frozen under `assets/legacy/v2/`.
+Foundry v2 installs `explorer.toml` + `reviewer.toml` and records state/runtime version 2.
 
 ### v3
 
-The workload-aware candidate adds:
+The workload-aware runtime adds:
 
 ```text
 .codex/agents/verifier.toml
 ```
 
-and records:
-
-```json
-{
-  "version": 3,
-  "runtime_version": "3",
-  "managed_agents": ["explorer.toml", "reviewer.toml", "verifier.toml"],
-  "models": {
-    "explorer": "...",
-    "reviewer": "...",
-    "verifier": "..."
-  }
-}
-```
+and records state/runtime version 3 with model keys for `explorer`, `reviewer`, and `verifier`.
 
 ### Migration safety
 
-Migration must preserve ownership semantics rather than perform a blind rename.
+Migration preserves ownership semantics rather than performing a blind rename/update.
 
-- The v1 Explorer model override is normalized to the v2 `explorer` key.
-- The legacy `repo_explorer.toml` is deleted only when it is still Foundry-managed and exactly matches the expected v1 template for the state-recorded model.
-- Drift in a Foundry-owned v1 Explorer/Reviewer or v2 Explorer/Reviewer profile blocks the whole plan.
-- An orphan legacy profile carrying the Foundry management marker without matching v1 state blocks for inspection; a foreign file that merely reuses the old `repo_explorer.toml` name is not claimed or reserved.
-- A foreign target `explorer.toml` blocks the migration.
-- `--force` may back up/replace a foreign `explorer.toml` only with explicit user authorization.
-- If migration is blocked, the legacy profile is retained and no writes are applied.
-- v1 uninstall remains supported so users are never forced to migrate before removing Foundry.
+- v1 Explorer model overrides normalize to the current `explorer` key.
+- Legacy `repo_explorer.toml` is deleted only when still Foundry-managed and exactly equal to the expected v1 lifecycle template for the recorded model.
+- Drift in Foundry-owned v1 Explorer/Reviewer or v2 Explorer/Reviewer blocks the whole upgrade.
+- An orphan legacy profile carrying the Foundry marker without matching v1 state blocks for inspection; a foreign file that merely reuses the old name is not claimed.
+- Foreign target profiles block unless explicit `--force` authorizes backup + replacement.
+- If migration is blocked, no writes are applied.
+- v1/v2 uninstall remains supported.
+- v2 → v3 preserves Explorer/Reviewer model overrides and adds Verifier only after ownership/drift checks pass.
 
-Exact v1 Explorer/Reviewer and v2 Explorer/Reviewer profile fixtures are frozen under `assets/legacy/v1/` and `assets/legacy/v2/`. Migration and old-version uninstall compare against those immutable lifecycle fixtures rather than deriving historical expectations from current Runtime. v2 → v3 preserves Explorer/Reviewer model overrides and adds Verifier only after ownership/drift checks pass.
+Exact v1 and v2 lifecycle profile fixtures live under `assets/legacy/v1/` and `assets/legacy/v2/`. Upgrade/uninstall logic compares against these historical fixtures rather than deriving historical expectations from current Runtime.
+
+The fixture contents are hash-pinned by repository validation. This makes an accidental edit to a historical template fail CI instead of silently changing both the generated migration input and its expected result.
 
 ## Installer model
 
@@ -296,37 +317,22 @@ State records:
 
 ## Runtime packaging
 
-`runtime/` is the source of truth. The Installer Skill carries a generated `assets/project/` package so it can operate independently of this repository.
+`runtime/` is the current source of truth. The Installer Skill carries a generated `assets/project/` package so it can operate independently of this repository.
 
-`scripts/package_runtime.py --check` verifies byte-for-byte synchronization and also rejects a stale packaged v1 `repo_explorer.toml`.
+`scripts/package_runtime.py --check` verifies byte-for-byte synchronization of current Runtime/package files, rejects stale active legacy assets, and verifies the pinned hashes of frozen v1/v2 lifecycle fixtures.
 
 ## Current role models
 
-Defaults come from the packaged runtime profiles themselves rather than separately hard-coded copies:
+Defaults come from the packaged runtime profiles themselves:
 
 - `explorer`: `gpt-5.6-terra` / `medium`;
+- `verifier`: `gpt-5.6-luna` / `low`;
 - `reviewer`: `gpt-5.6` / `high`.
 
-Explicit model overrides are persisted in state and treated as intentional configuration by verification and future upgrades.
-
-
-## Workload-aware context policy
-
-Observed session archives showed that full-history forks and very long sessions can duplicate large tool histories across child sessions. Current MultiAgentV2 supports `fork_turns = "none"`, positive last-N history, and full-history; omitted `fork_turns` currently resolves to full history in Codex main. Foundry therefore treats history selection as an explicit cost/quality decision.
-
-- Self-contained Explorer/Verifier/Reviewer missions should prefer no-history spawning when the installed client reliably delivers the mission.
-- Missions that genuinely need prior turns should receive the smallest useful last-N history.
-- Full-history is exceptional and should be justified by dependency on broad conversation history.
-- If a client release has a no-history message-delivery bug, use the smallest useful last-N fallback instead of silently returning to full history.
-
-This policy is paired with explicit mission contracts so the child receives goal, paths, commands, known facts, constraints, acceptance evidence, expected return, and stop condition rather than inheriting a transcript and rediscovering the task.
-
-## Output and polling budget
-
-Foundry treats raw terminal output as a context resource. Long build/test/log/device output should remain in files when practical. A verification result should normally contain command, cwd, PASS/FAIL, exit code, elapsed time when available, concise diagnostics, and the full-log path.
-
-Repeated polling that does not require model judgment should execute inside one bounded shell/program invocation. Repeated deterministic validation without a relevant state change, transient-failure reason, or explicit request should be avoided.
+Explicit installer model overrides are persisted in state and treated as intentional configuration by verification and future upgrades.
 
 ## Session checkpoints
 
-After a major milestone or repeated compaction, Root should checkpoint durable task state rather than preserving an unlimited transcript: goal, decisions, changed files, validation results, blockers, and next action. If stale tool history dominates the active context, a fresh session from that checkpoint is preferred.
+After a major milestone or repeated compaction, Root should checkpoint durable task state rather than preserving an unlimited transcript: goal, decisions, changed files, validation results and their baselines, blockers, and next action.
+
+If stale tool history dominates the active context, continuing from that checkpoint in a fresh session is preferred.

@@ -72,11 +72,15 @@ class RuntimeExperienceTests(unittest.TestCase):
     def test_verifier_model_override_is_role_local(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            mod.apply_plan(mod.build_install_plan(root, verifier_model="gpt-5.6-terra"))
+            verifier_override = "gpt-verifier-only-test"
+            mod.apply_plan(mod.build_install_plan(root, verifier_model=verifier_override))
             state = json.loads((root / ".codex/.agent-foundry.json").read_text())
-            self.assertEqual(state["models"]["verifier"], "gpt-5.6-terra")
+            self.assertEqual(state["models"]["verifier"], verifier_override)
             self.assertEqual(state["models"]["explorer"], "gpt-5.6-terra")
-            self.assertIn('model = "gpt-5.6-terra"', (root / ".codex/agents/verifier.toml").read_text())
+            self.assertEqual(state["models"]["reviewer"], "gpt-5.6")
+            self.assertIn(f'model = "{verifier_override}"', (root / ".codex/agents/verifier.toml").read_text())
+            self.assertIn('model = "gpt-5.6-terra"', (root / ".codex/agents/explorer.toml").read_text())
+            self.assertIn('model = "gpt-5.6"', (root / ".codex/agents/reviewer.toml").read_text())
 
     def test_apply_prints_new_session_hint(self):
         with tempfile.TemporaryDirectory() as td:

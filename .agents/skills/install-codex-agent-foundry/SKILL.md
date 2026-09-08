@@ -33,26 +33,29 @@ Model overrides are role-specific:
 scripts/install.py <target>   --explorer-model <model>   --reviewer-model <model>   --verifier-model <model>
 ```
 
-The default Verifier is `gpt-5.6-luna` / `low`. If an installed Codex release rejects Luna for child agents, use `--verifier-model gpt-5.6-terra`; do not globally downgrade all subagents.
+The default Verifier is `gpt-5.6-luna` / `low`. Spawn persistent Foundry agents by role and let their role profiles own model/reasoning settings; do not pass an explicit spawn-time Luna model merely to restate `verifier.toml`. Some MultiAgent V2 client/model-catalog combinations reject Luna as an explicit spawn-time model override even when a custom role can apply it. If the configured Verifier role itself cannot spawn, use Root for that session or explicitly reinstall/reconfigure with `--verifier-model gpt-5.6-terra`; do not silently fall back to another model.
 
 ## Workload-aware runtime rules
 
 - Do not spawn Verifier for one short deterministic command merely to use a cheaper model.
 - Use Verifier for long/noisy builds, tests, logs, device/environment checks, waits, or repeated polling that can run independently.
 - Prefer minimal-history missions. When supported and self-contained, use `fork_turns = "none"`; if a client release fails no-history task delivery, use the smallest useful last-N history rather than full history.
+- Keep the relevant source state stable during same-checkout verification. If Root must keep editing relevant source, use a separate worktree/snapshot; discard validation evidence if its source state changed underneath it.
 - Aggregate polling into one bounded shell/program loop when no fresh model judgment is needed per sample.
 - Keep large stdout/stderr in files and return bounded evidence plus a log path.
 - Avoid deterministic reruns when relevant state has not changed.
-- Explorer, Verifier, and Reviewer are behaviorally no-write, not independent filesystem sandboxes; hard isolation comes from parent session/runtime permissions.
+- Explorer and Reviewer are behaviorally no-write. Verifier is source-preserving: normal transient build/test artifacts, caches, and designated logs are allowed, but source/project configuration/user content must not be intentionally modified.
+- These are behavioral contracts, not independent filesystem sandboxes; hard isolation comes from parent session/runtime permissions.
 
 ## Lifecycle safety
 
 - v1 `repo_explorer` migration and v1 uninstall remain supported with frozen v1 fixtures.
 - v2 Explorer/Reviewer upgrade and v2 uninstall remain supported with frozen v2 fixtures.
+- CI pins hashes for the frozen v1/v2 lifecycle fixtures so accidental historical-template edits fail validation.
 - v3 adds `verifier.toml`; a foreign same-name Verifier blocks unless the user explicitly authorizes `--force` backup + replacement.
 - Update managed profiles only when ownership is established; preserve unrelated project configuration.
 - State records runtime version, role model selections, conservative source revision, and deterministic runtime SHA-256.
 
 For removal, run `scripts/install.py <target> --uninstall --check` before `--uninstall`.
 
-Read `references/design.md` when changing runtime behavior, role identity, model routing, history policy, migration semantics, or installer safety guarantees.
+Read `references/design.md` when changing runtime behavior, role identity, model routing, history policy, verification-state ownership, migration semantics, or installer safety guarantees.

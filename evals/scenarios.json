@@ -27,6 +27,11 @@
       "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": true, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
     },
     {
+      "id": "verification-while-root-edits",
+      "description": "A long source-dependent verification should run while Root still needs to edit relevant source.",
+      "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": true, "worktrees": true, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
+    },
+    {
       "id": "polling-device-state",
       "description": "A device/sysfs condition needs repeated polling without fresh reasoning on every sample.",
       "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": true, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": true, "avoid_redundant_rerun": false}
