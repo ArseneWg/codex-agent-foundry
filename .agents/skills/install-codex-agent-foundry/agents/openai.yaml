@@ -1,0 +1,4 @@
+interface:
+  display_name: "Install Codex Agent Foundry"
+  short_description: "Safely install or maintain Codex multi-agent orchestration"
+  default_prompt: "Use $install-codex-agent-foundry to inspect and safely install or update the Foundry multi-agent orchestration policy in this repository."

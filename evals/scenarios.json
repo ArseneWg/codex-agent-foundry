@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "trivial-change",
+      "description": "A tiny local edit with obvious scope.",
+      "expected": {
+        "repo_explorer": false,
+        "reviewer": false,
+        "worker": false,
+        "temporary_verifier": false,
+        "worktrees": false,
+        "parallel_writers_same_checkout": false
+      }
+    },
+    {
+      "id": "unclear-cross-module-bug",
+      "description": "A regression spans modules and the execution path is unclear.",
+      "expected": {
+        "repo_explorer": true,
+        "reviewer": true,
+        "worker": false,
+        "temporary_verifier": false,
+        "worktrees": false,
+        "parallel_writers_same_checkout": false
+      }
+    },
+    {
+      "id": "bounded-implementation",
+      "description": "A mechanical implementation has explicit files, ownership and acceptance criteria.",
+      "expected": {
+        "repo_explorer": false,
+        "reviewer": true,
+        "worker": true,
+        "temporary_verifier": false,
+        "worktrees": false,
+        "parallel_writers_same_checkout": false
+      }
+    },
+    {
+      "id": "noisy-verification",
+      "description": "Large tests and logs can be analyzed independently.",
+      "expected": {
+        "repo_explorer": false,
+        "reviewer": false,
+        "worker": false,
+        "temporary_verifier": true,
+        "worktrees": false,
+        "parallel_writers_same_checkout": false
+      }
+    },
+    {
+      "id": "parallel-substantial-writes",
+      "description": "Two substantial independent implementations are needed concurrently.",
+      "expected": {
+        "repo_explorer": false,
+        "reviewer": false,
+        "worker": false,
+        "temporary_verifier": false,
+        "worktrees": true,
+        "parallel_writers_same_checkout": false
+      }
+    }
+  ]
+}
