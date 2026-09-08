@@ -48,7 +48,7 @@ class RuntimeContractTests(unittest.TestCase):
             'fork_turns = "none"',
             "smallest useful positive last-N",
             "Full-history forks are exceptional",
-            "do not pass a spawn-time model or reasoning-effort override",
+            "Do not pass a spawn-time model or reasoning-effort override",
             'agent_type = "verifier"',
             "same checkout",
             "separate worktree or other immutable snapshot",
