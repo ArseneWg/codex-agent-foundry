@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 11):
+    print(
+        f"ERROR: Codex Agent Foundry requires Python 3.11+ (found {sys.version_info.major}.{sys.version_info.minor}). "
+        "Ubuntu 22.04 ships Python 3.10 by default; run this installer with Python 3.11 or newer.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
 import argparse
 import hashlib
 import json
 import os
 import re
-import sys
+import subprocess
 import tempfile
 import tomllib
 from dataclasses import dataclass, field
@@ -14,14 +24,22 @@ from pathlib import Path
 from typing import Literal
 
 VERSION = 1
+RUNTIME_VERSION = "1"
 DEFAULT_CONCURRENCY = 4
 START = "<!-- codex-agent-foundry:start -->"
 END = "<!-- codex-agent-foundry:end -->"
 MANAGED = "# managed-by: codex-agent-foundry"
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 ASSET_ROOT = SKILL_ROOT / "assets" / "project"
+RUNTIME_FILES = (
+    "AGENTS.fragment.md",
+    ".codex/config.toml",
+    ".codex/agents/repo_explorer.toml",
+    ".codex/agents/reviewer.toml",
+)
 
 Action = Literal["create", "update", "delete", "backup", "unchanged", "conflict"]
+
 
 @dataclass(frozen=True)
 class Step:
@@ -36,6 +54,7 @@ class Step:
     def mutates(self) -> bool:
         return self.action in {"create", "update", "delete", "backup"}
 
+
 @dataclass
 class Plan:
     target: Path
@@ -46,8 +65,10 @@ class Plan:
     def blocked(self) -> bool:
         return any(s.action == "conflict" for s in self.steps)
 
+
 class InstallError(RuntimeError):
     pass
+
 
 def read_bytes(path: Path) -> bytes | None:
     if path.is_symlink():
@@ -61,6 +82,7 @@ def read_bytes(path: Path) -> bytes | None:
     except OSError as exc:
         raise InstallError(f"{path}: cannot read managed file: {exc}") from exc
 
+
 def read_text(path: Path) -> str:
     data = read_bytes(path)
     if data is None:
@@ -69,6 +91,7 @@ def read_text(path: Path) -> str:
         return data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise InstallError(f"{path}: managed text file is not valid UTF-8") from exc
+
 
 def reject_managed_symlink_paths(target: Path) -> None:
     directory_paths = {".codex", ".codex/agents"}
@@ -90,14 +113,46 @@ def reject_managed_symlink_paths(target: Path) -> None:
             if rel not in directory_paths and not path.is_file():
                 raise InstallError(f"{path}: expected a regular file")
 
+
 def file_mode(path: Path) -> int | None:
     try:
         return path.stat().st_mode & 0o7777
     except FileNotFoundError:
         return None
 
+
 def sha256(data: bytes | None) -> str | None:
     return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
+def runtime_sha256() -> str:
+    digest = hashlib.sha256()
+    for rel in sorted(RUNTIME_FILES):
+        data = read_bytes(ASSET_ROOT / rel)
+        if data is None:
+            raise InstallError(f"missing bundled runtime file: {ASSET_ROOT / rel}")
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(data)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def source_revision() -> str:
+    repo_root = SKILL_ROOT.parents[2]
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            text=True,
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    revision = result.stdout.strip()
+    return revision if result.returncode == 0 and re.fullmatch(r"[0-9a-fA-F]{7,64}", revision) else "unknown"
+
 
 def atomic_write(path: Path, content: bytes, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,11 +173,13 @@ def atomic_write(path: Path, content: bytes, mode: int | None = None) -> None:
             pass
         raise
 
+
 def managed_block() -> str:
     fragment = read_text(ASSET_ROOT / "AGENTS.fragment.md").strip()
     if not fragment:
         raise InstallError("bundled AGENTS.fragment.md is missing or empty")
     return f"{START}\n{fragment}\n{END}"
+
 
 def marker_bounds(text: str, path: Path) -> tuple[int, int] | None:
     start_count = text.count(START)
@@ -136,6 +193,7 @@ def marker_bounds(text: str, path: Path) -> tuple[int, int] | None:
     if start >= end:
         raise InstallError(f"{path}: Foundry managed block markers are reversed")
     return start, end + len(END)
+
 
 def desired_agents_md(target: Path) -> tuple[Path, bytes, str]:
     path = target / "AGENTS.md"
@@ -157,6 +215,7 @@ def desired_agents_md(target: Path) -> tuple[Path, bytes, str]:
         detail = "append managed Foundry block" if old else "create with managed Foundry block"
     return path, new.encode(), detail
 
+
 def desired_agents_md_without_foundry(target: Path) -> tuple[Path, bytes | None, str]:
     path = target / "AGENTS.md"
     old = read_text(path)
@@ -176,6 +235,7 @@ def desired_agents_md_without_foundry(target: Path) -> tuple[Path, bytes | None,
         new = ""
     return path, new.encode() if new else None, "remove Foundry managed block"
 
+
 def find_agents_section(lines: list[str]) -> tuple[int, int] | None:
     start = None
     header = re.compile(r"^\s*\[\s*agents\s*\]\s*(?:#.*)?$")
@@ -188,10 +248,12 @@ def find_agents_section(lines: list[str]) -> tuple[int, int] | None:
             return start, i
     return (start, len(lines)) if start is not None else None
 
+
 def validate_concurrency_value(path: Path, value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise InstallError(f"{path}: agents.max_concurrent_threads_per_session must be an integer >= 1")
     return value
+
 
 def desired_config(target: Path) -> tuple[Path, bytes, bool, str]:
     path = target / ".codex" / "config.toml"
@@ -244,6 +306,7 @@ def desired_config(target: Path) -> tuple[Path, bytes, bool, str]:
         raise InstallError(f"{path}: merged TOML would be invalid: {exc}") from exc
     return path, new.encode(), True, detail
 
+
 def remove_managed_concurrency(target: Path, state: dict[str, object]) -> tuple[Path, bytes | None, str]:
     path = target / ".codex" / "config.toml"
     old = read_text(path)
@@ -284,8 +347,10 @@ def remove_managed_concurrency(target: Path, state: dict[str, object]) -> tuple[
     desired = new.encode() if new else (None if bool(state.get("config_created")) else b"")
     return path, desired, "remove Foundry-managed concurrency setting"
 
+
 def is_foundry_managed(content: str) -> bool:
     return any(line.strip() == MANAGED for line in content.splitlines()[:5])
+
 
 def default_profile(name: str) -> str:
     path = ASSET_ROOT / ".codex" / "agents" / name
@@ -300,6 +365,7 @@ def default_profile(name: str) -> str:
         raise InstallError(f"bundled profile is missing Foundry management marker: {path}")
     return content
 
+
 def set_profile_model(content: str, model: str) -> str:
     if not model.strip():
         raise InstallError("model override must not be empty")
@@ -312,13 +378,21 @@ def set_profile_model(content: str, model: str) -> str:
         raise InstallError(f"model override would produce invalid profile TOML: {exc}") from exc
     return new
 
-def bundled_profile_model(name: str) -> str:
-    content = default_profile(name)
-    parsed = tomllib.loads(content)
+
+def bundled_profile_info(name: str) -> tuple[str, str]:
+    parsed = tomllib.loads(default_profile(name))
     model = parsed.get("model")
+    effort = parsed.get("model_reasoning_effort")
     if not isinstance(model, str) or not model.strip():
         raise InstallError(f"bundled profile {name} has an invalid model")
-    return model
+    if not isinstance(effort, str) or not effort.strip():
+        raise InstallError(f"bundled profile {name} has an invalid model_reasoning_effort")
+    return model, effort
+
+
+def bundled_profile_model(name: str) -> str:
+    return bundled_profile_info(name)[0]
+
 
 def validate_state(path: Path, payload: dict[str, object]) -> None:
     required = {"version", "managed_agents", "agents_md_markers", "concurrency_added", "config_created", "models"}
@@ -335,12 +409,17 @@ def validate_state(path: Path, payload: dict[str, object]) -> None:
         if not isinstance(payload.get(key), bool):
             raise InstallError(f"{path}: state field {key} must be boolean")
     models = payload.get("models")
-    if not isinstance(models, dict):
-        raise InstallError(f"{path}: state field models must be a mapping")
-    if set(models) != {"repo_explorer", "reviewer"}:
+    if not isinstance(models, dict) or set(models) != {"repo_explorer", "reviewer"}:
         raise InstallError(f"{path}: state field models has unexpected role keys")
     if not all(isinstance(v, str) and v.strip() for v in models.values()):
         raise InstallError(f"{path}: state model values must be non-empty strings")
+    if "runtime_version" in payload and (not isinstance(payload["runtime_version"], str) or not payload["runtime_version"]):
+        raise InstallError(f"{path}: runtime_version must be a non-empty string")
+    if "source_revision" in payload and (not isinstance(payload["source_revision"], str) or not payload["source_revision"]):
+        raise InstallError(f"{path}: source_revision must be a non-empty string")
+    if "runtime_sha256" in payload and not re.fullmatch(r"[0-9a-f]{64}", str(payload["runtime_sha256"])):
+        raise InstallError(f"{path}: runtime_sha256 must be a 64-character lowercase hex digest")
+
 
 def read_state(target: Path, required: bool = False) -> dict[str, object] | None:
     path = target / ".codex" / ".agent-foundry.json"
@@ -358,6 +437,7 @@ def read_state(target: Path, required: bool = False) -> dict[str, object] | None
     validate_state(path, payload)
     return payload
 
+
 def backup_path(path: Path, reserved: set[Path]) -> Path:
     candidate = path.with_name(path.name + ".foundry-backup")
     n = 2
@@ -366,14 +446,23 @@ def backup_path(path: Path, reserved: set[Path]) -> Path:
         n += 1
     return candidate
 
-def step_for_content(path: Path, desired: bytes | None, detail: str, *, action_if_absent: Action = "create") -> Step:
+
+def step_for_content(
+    path: Path,
+    desired: bytes | None,
+    detail: str,
+    *,
+    action_if_absent: Action = "create",
+    unchanged_detail: str | None = None,
+) -> Step:
     old = read_bytes(path)
     if desired == old:
-        return Step("unchanged", path, detail, expected_before=old)
+        return Step("unchanged", path, unchanged_detail or detail, expected_before=old)
     if desired is None:
         return Step("delete", path, detail, expected_before=old)
     action: Action = "update" if old is not None else action_if_absent
     return Step(action, path, detail, content=desired, expected_before=old, mode=file_mode(path))
+
 
 def build_install_plan(target: Path, *, force: bool = False, explorer_model: str | None = None, reviewer_model: str | None = None) -> Plan:
     target = target.resolve()
@@ -384,20 +473,24 @@ def build_install_plan(target: Path, *, force: bool = False, explorer_model: str
     prior_models = prior_state.get("models", {}) if isinstance(prior_state, dict) else {}
     if not isinstance(prior_models, dict):
         prior_models = {}
-    explorer_model = explorer_model or str(prior_models.get("repo_explorer") or bundled_profile_model("repo_explorer.toml"))
-    reviewer_model = reviewer_model or str(prior_models.get("reviewer") or bundled_profile_model("reviewer.toml"))
+
+    explorer_default, explorer_effort = bundled_profile_info("repo_explorer.toml")
+    reviewer_default, reviewer_effort = bundled_profile_info("reviewer.toml")
+    explorer_model = explorer_model or str(prior_models.get("repo_explorer") or explorer_default)
+    reviewer_model = reviewer_model or str(prior_models.get("reviewer") or reviewer_default)
+
     plan = Plan(target)
     agents_path, agents_content, agents_detail = desired_agents_md(target)
-    plan.steps.append(step_for_content(agents_path, agents_content, agents_detail))
+    plan.steps.append(step_for_content(agents_path, agents_content, agents_detail, unchanged_detail="managed block already current"))
     config_path, config_content, concurrency_added_now, config_detail = desired_config(target)
-    plan.steps.append(step_for_content(config_path, config_content, config_detail))
+    plan.steps.append(step_for_content(config_path, config_content, config_detail, unchanged_detail="project config already current"))
+
     reserved: set[Path] = set()
     selected_models = {"repo_explorer": explorer_model, "reviewer": reviewer_model}
     for filename, model in (("repo_explorer.toml", explorer_model), ("reviewer.toml", reviewer_model)):
         dst = target / ".codex" / "agents" / filename
         old = read_bytes(dst)
-        desired_text = set_profile_model(default_profile(filename), model)
-        desired = desired_text.encode()
+        desired = set_profile_model(default_profile(filename), model).encode()
         if old == desired:
             plan.steps.append(Step("unchanged", dst, "profile already current", expected_before=old))
             continue
@@ -410,10 +503,16 @@ def build_install_plan(target: Path, *, force: bool = False, explorer_model: str
             plan.steps.append(Step("backup", backup, f"back up foreign {filename} before replacement", content=old, expected_before=None, mode=file_mode(dst)))
         detail = "update Foundry-managed profile" if old is not None else "install Foundry-managed profile"
         plan.steps.append(Step("update" if old is not None else "create", dst, detail, content=desired, expected_before=old, mode=file_mode(dst)))
+
     prior_added = bool(prior_state.get("concurrency_added")) if isinstance(prior_state, dict) else False
     concurrency_added = prior_added or concurrency_added_now
     prior_config_created = bool(prior_state.get("config_created")) if isinstance(prior_state, dict) else False
     config_created = prior_config_created or (read_bytes(config_path) is None and concurrency_added_now)
+    provenance = {
+        "runtime_version": RUNTIME_VERSION,
+        "source_revision": source_revision(),
+        "runtime_sha256": runtime_sha256(),
+    }
     state = {
         "version": VERSION,
         "managed_agents": ["repo_explorer.toml", "reviewer.toml"],
@@ -421,12 +520,24 @@ def build_install_plan(target: Path, *, force: bool = False, explorer_model: str
         "concurrency_added": concurrency_added,
         "config_created": config_created,
         "models": selected_models,
+        **provenance,
     }
     state_path = target / ".codex" / ".agent-foundry.json"
     state_content = (json.dumps(state, indent=2, sort_keys=True) + "\n").encode()
-    plan.steps.append(step_for_content(state_path, state_content, "record Foundry installation state"))
-    plan.metadata.update({"mode": "install", "models": selected_models, "concurrency_added": concurrency_added, "config_created": config_created})
+    plan.steps.append(step_for_content(state_path, state_content, "record Foundry installation state", unchanged_detail="Foundry installation state already current"))
+    plan.metadata.update({
+        "mode": "install",
+        "models": selected_models,
+        "roles": {
+            "repo_explorer": {"model": explorer_model, "reasoning_effort": explorer_effort},
+            "reviewer": {"model": reviewer_model, "reasoning_effort": reviewer_effort},
+        },
+        "concurrency_added": concurrency_added,
+        "config_created": config_created,
+        **provenance,
+    })
     return plan
+
 
 def build_uninstall_plan(target: Path) -> Plan:
     target = target.resolve()
@@ -437,9 +548,9 @@ def build_uninstall_plan(target: Path) -> Plan:
     assert state is not None
     plan = Plan(target)
     agents_path, desired_agents, detail = desired_agents_md_without_foundry(target)
-    plan.steps.append(step_for_content(agents_path, desired_agents, detail))
+    plan.steps.append(step_for_content(agents_path, desired_agents, detail, unchanged_detail="Foundry managed block already absent"))
     config_path, desired_config_bytes, detail = remove_managed_concurrency(target, state)
-    plan.steps.append(step_for_content(config_path, desired_config_bytes, detail))
+    plan.steps.append(step_for_content(config_path, desired_config_bytes, detail, unchanged_detail=detail))
     managed = state.get("managed_agents")
     if not isinstance(managed, list) or not all(isinstance(x, str) for x in managed):
         raise InstallError("state file has invalid managed_agents")
@@ -461,17 +572,16 @@ def build_uninstall_plan(target: Path) -> Plan:
             continue
         plan.steps.append(Step("delete", path, "remove Foundry-managed profile", expected_before=old))
     state_path = target / ".codex" / ".agent-foundry.json"
-    plan.steps.append(step_for_content(state_path, None, "remove Foundry installation state"))
+    plan.steps.append(step_for_content(state_path, None, "remove Foundry installation state", unchanged_detail="Foundry installation state already absent"))
     plan.metadata["mode"] = "uninstall"
     return plan
 
-def _current_bytes(path: Path) -> bytes | None:
-    return read_bytes(path)
 
 def _check_precondition(step: Step) -> None:
-    current = _current_bytes(step.path)
+    current = read_bytes(step.path)
     if current != step.expected_before:
         raise InstallError(f"{step.path}: changed after plan was built (expected sha256={sha256(step.expected_before)}, current sha256={sha256(current)})")
+
 
 def apply_plan(plan: Plan) -> None:
     if plan.blocked:
@@ -518,23 +628,30 @@ def apply_plan(plan: Plan) -> None:
         for directory in sorted(candidate_dirs - existing_dirs, key=lambda p: len(p.parts), reverse=True):
             try:
                 directory.rmdir()
-            except FileNotFoundError:
-                pass
-            except OSError:
+            except (FileNotFoundError, OSError):
                 pass
         suffix = f"; rollback errors: {'; '.join(rollback_errors)}" if rollback_errors else ""
         if isinstance(exc, InstallError):
             raise InstallError(f"{exc}{suffix}") from exc
         raise InstallError(f"apply failed: {exc}{suffix}") from exc
 
+
 def print_plan(plan: Plan, *, label: str) -> None:
     print(f"{label}: {plan.target}")
+    roles = plan.metadata.get("roles")
+    if isinstance(roles, dict):
+        print("Selected agents:")
+        for role in ("repo_explorer", "reviewer"):
+            info = roles.get(role)
+            if isinstance(info, dict):
+                print(f"- {role}: {info.get('model')} / {info.get('reasoning_effort')}")
     for step in plan.steps:
         try:
             rel = step.path.resolve().relative_to(plan.target)
         except ValueError:
             rel = step.path
         print(f"- {step.action:9} {rel}: {step.detail}")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Install, update, inspect, or uninstall Codex Agent Foundry.")
@@ -569,7 +686,10 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
     print_plan(plan, label="APPLIED")
+    if not args.uninstall:
+        print("Start a new Codex session in this project to load Foundry.")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
