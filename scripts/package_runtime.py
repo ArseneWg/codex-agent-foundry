@@ -34,6 +34,10 @@ def load_manifest() -> tuple[str, list[str]]:
         raise ManifestError("runtime manifest runtime_version must be a non-empty string")
     if not isinstance(files, list) or not files or not all(isinstance(x, str) and x.strip() for x in files):
         raise ManifestError("runtime manifest files must be a non-empty list of paths")
+    for rel in files:
+        rel_path = Path(rel)
+        if rel_path.is_absolute() or ".." in rel_path.parts or rel_path.as_posix() != rel:
+            raise ManifestError(f"runtime manifest contains unsafe path: {rel!r}")
     if len(set(files)) != len(files):
         raise ManifestError("runtime manifest files contains duplicates")
     if MANIFEST in files:
