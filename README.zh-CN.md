@@ -2,27 +2,53 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-如果你刚开始用 Codex，可以先记住一句话：
+如果只记住一句话：
 
-> **Codex Agent Foundry 的核心，是规范 Codex 在一个代码仓库里应该怎样进行多 Agent 协作。**
+> **Codex Agent Foundry 的核心，是用尽量少、职责清晰的 Agent，规范 Codex 在一个代码仓库里怎样协作，而不是尽可能多地创建 Agent。**
 
-它不是为了“多开几个 Agent”，而是解决这些更实际的问题：
+它主要回答：
 
-- Root Agent 应该一直负责什么？
-- 什么时候值得调用 Explorer？
-- 什么时候需要独立 Reviewer？
-- 什么任务才适合临时 Worker / Tester？
-- 多个 Agent 能不能同时修改同一个 checkout？
-- 什么情况下应该使用 Git worktree？
-- Subagent 能不能继续创建 Subagent？
-- 一个委派任务至少应该说明哪些边界？
-- 最后凭什么判断“任务真的完成了”？
+- Root 应该一直负责什么？
+- 哪些工作值得交给 Subagent？
+- 为什么长期只有 Explorer 和 Reviewer？
+- Codex 已经有 `worker` / `explorer`，为什么还要自定义 Agent？
+- Codex 已经有 `/review`，为什么还要 `reviewer`？
+- 为什么没有常驻 `implementer`、`tester`、`architect`？
+- 为什么一个 checkout 默认只有一个 writer？
+- 什么情况下才值得新增第三个长期 Agent？
+- 最后凭什么判断任务真的完成？
 
-Installer Skill、安装脚本、升级、冲突保护、验证、测试和 CI，都是为了**把这套协作规范安全地分发和维护到不同代码仓库里**。
+Installer Skill、安装脚本、升级、冲突保护、验证、测试和 CI，都是为了安全地分发和维护这套协作规范。
 
 ---
 
-## 1. 默认协作模型
+## 1. 第一原则：不是 Agent 越多越好
+
+很容易把多 Agent 系统设计成：
+
+```text
+Planner
+→ Architect
+→ Implementer
+→ Tester
+→ Reviewer
+→ Researcher
+→ Root
+```
+
+看起来角色很完整，但每增加一个长期 Agent 都会产生真实成本：
+
+- 上下文要重新转述；
+- 结果要重新汇总；
+- Agent 之间可能得出冲突结论；
+- token、延迟、线程都会增加；
+- write ownership 更难判断；
+- 自定义 profile 越多，越容易和 Codex 自带能力重复；
+- Codex 自身升级后维护面也更大。
+
+Foundry 因此只把**高频、稳定、隔离后明显有收益**的工作长期化。
+
+当前 baseline：
 
 ```text
                          Root
@@ -42,459 +68,482 @@ Installer Skill、安装脚本、升级、冲突保护、验证、测试和 CI�
                  根据证据做最终判断
 ```
 
-Foundry 默认只长期配置两个专职 Subagent。
+长期 Custom Agent 只有两个：
 
-### `repo_explorer`
+- `repo_explorer`：read-heavy 调查；
+- `reviewer`：material implementation 后的独立冷 Review。
 
-负责 **read-heavy 调查**，例如：
-
-- 找真正的代码入口；
-- 追调用链；
-- 找测试和依赖；
-- 判断模块边界；
-- 找最小修改范围；
-- 收集实现前证据。
-
-它默认只读，不负责直接修代码。
-
-### `reviewer`
-
-负责实现完成后的 **独立冷 Review**，重点看：
-
-- correctness；
-- regression；
-- security；
-- concurrency / state 风险；
-- 边界条件；
-- 真正重要的测试缺口。
-
-它同样默认只读，发现问题后把证据交回 Root，而不是自己偷偷修改。
-
-### 临时 Worker / Verifier
-
-不是常驻角色。
-
-只有当任务边界足够明确，或者测试/log 很大、很吵、适合隔离时，Root 才按需委派。
+实现、验证、研究默认按需出现。
 
 ---
 
-## 2. 最重要的协作规则
+## 2. Foundry 不是从“Codex 什么都没有”开始设计
 
-### 1）Root 保留最终责任
-
-Root 默认负责：
-
-- 理解用户目标；
-- 拆解任务；
-- 关键架构判断；
-- 默认写代码；
-- 汇总 Subagent 结果；
-- 检查最终 diff；
-- 看 tests / build / logs / source 等证据；
-- 决定任务是否真的完成。
-
-### 2）一个 checkout 同时只保留一个 source-code writer
-
-默认 Root 写代码。
-
-如果一个 bounded worker 接管了明确实现任务，那么它工作期间 Root 不应该同时修改同一个 checkout。
-
-如果确实需要多个 Agent 同时进行大规模实现，应使用不同 Git worktree。
-
-### 3）默认只做一层 fan-out / fan-in
+当前 Codex 官方文档已经提供内置 Subagent：
 
 ```text
-Root
-├── Explorer
-├── Reviewer
-└── Temporary agent
-      ↓
-   结果回 Root
+default   → 通用 fallback
+worker    → implementation / fixes
+explorer  → read-heavy codebase exploration
 ```
 
-Subagent 默认不继续递归创建 Subagent。只有 Root 针对一个明确 mission 显式授权 nested delegation 时才例外。
-
-### 4）不要为了并发而并发
-
-只有 delegation 能带来真正收益时才委派，例如：
-
-- read-heavy 调查；
-- noisy log / test；
-- 可以独立验证的任务；
-- 明确有延迟收益的并行工作。
-
-### 5）Agent 说“没问题”不算证据
-
-最终完成应该回到：
+Codex 还有原生：
 
 ```text
-diff
-+ tests
-+ build
-+ logs
-+ source
-+ reproduction
-+ 其他可验证证据
+/review
+codex review
 ```
 
-真正的协作规范源文件在：
+代码审查工作流。
+
+所以 Foundry 的规则是：
+
+> **能直接利用 Codex 内置能力，就不重复造泛化角色；只有需要更窄、更稳定的行为契约时，才做 Custom Agent。**
+
+官方参考：[Subagents](https://developers.openai.com/codex/subagents) · [Developer commands / review](https://developers.openai.com/codex/cli/slash-commands)
+
+---
+
+## 3. 为什么恰好长期保留两个 Agent？
+
+| 工作 | Foundry 选择 | 原因 |
+| --- | --- | --- |
+| 目标、拆解、架构判断、集成、最终验证 | **Root** | Root 拥有最完整上下文，最终责任不转交 |
+| 代码库调查 | **长期 `repo_explorer`** | 高频、天然只读、适合并行、隔离收益明显 |
+| 实现 / 修复 | **Root 默认；内置 `worker` 按需** | Codex 已有 worker，没必要再造 generic implementer |
+| 独立 Review | **长期 `reviewer`** | 冷上下文可以挑战 writer 原有假设，并能嵌入完整工作流 |
+| 大型测试 / log / diagnostics | **临时 verifier** | 验证方式高度项目相关，generic tester 稳定价值不高 |
+| Planner / Architect | **Root** | 高层判断与用户目标强耦合，额外角色增加上下文传递和责任模糊 |
+| Research | **临时；稳定领域出现后再专门化** | 泛化 researcher 太宽，绑定稳定领域/MCP 时才更值得长期存在 |
+
+核心不是“角色名字”，而是：
+
+> **这个任务边界是否稳定？独立 context 是否真的有价值？**
+
+---
+
+## 4. 已经有内置 `explorer`，为什么还有 `repo_explorer`？
+
+这是一个**有意接受的功能重叠**。
+
+内置 `explorer` 已经适合普通 read-heavy 调查；Foundry 的 `repo_explorer` 则固定更窄的契约：
 
 ```text
-runtime/AGENTS.fragment.md
+read-only sandbox
+固定 model / reasoning effort
+追真实 execution path
+返回 file / symbol evidence
+区分 confirmed facts 与 hypotheses
+找最小修改边界
+不改文件
+不做 speculative refactor
+不继续 spawn
+只返回 findings / evidence / risks / unknowns
+```
+
+### 收益
+
+- 行为更稳定；
+- 明确只读；
+- Root 更容易消费结果；
+- 可固定更合适的模型成本；
+- 不完全依赖 Codex 内置 explorer 的未来默认行为。
+
+### 代价
+
+- 和内置 explorer 有功能重复；
+- 多维护一个 profile。
+
+所以 `repo_explorer` 不是不可删除的。如果未来内置 explorer 已充分满足这些约束，**删掉自定义 explorer 反而可能是更好的简化**。
+
+---
+
+## 5. 已经有 `/review`，为什么还有 `reviewer`？
+
+两者目标重叠，但工作流边界不同。
+
+### `/review` / `codex review`
+
+适合用户明确提出：
+
+```text
+“Review 当前 working tree / branch / commit。”
+```
+
+这是 Codex 原生 Review 工作流，不需要为了 Foundry 而替换。
+
+### Foundry `reviewer`
+
+它是 Root 可以在完整多 Agent 流程里主动 spawn 的节点：
+
+```text
+repo_explorer 调查
+       ↓
+Root / Worker 实现
+       ↓
+reviewer 独立冷 Review
+       ↓
+Root 消化 findings
+       ↓
+必要时修改 + 验证 + 收口
+```
+
+它固定：
+
+- read-only；
+- 独立 model / reasoning effort；
+- 只找 material correctness / regression / security / state / tests 问题；
+- 不自己修 finding；
+- 不继续 spawn；
+- findings 回 Root，由 Root 决策。
+
+真正的价值不是“多一个 Agent 更聪明”，而是：
+
+> **制造一次尽量独立于 writer 的 cold context。**
+
+Foundry 接受它和 `/review` 有功能重叠，因为它支持**自主编排中的 in-flow review**。它不是 `/review` 的替代品。
+
+---
+
+## 6. 为什么没有长期 `implementer`？
+
+首先，Codex 已经有内置 `worker`，就是用于 implementation / fixes 的。
+
+再造：
+
+```text
+implementer.toml
+coder.toml
+developer.toml
+```
+
+大部分只是重复已有能力。
+
+更重要的是：**实现属于 write-heavy 工作。**
+
+多个 writer 在同一个 checkout 里可能造成：
+
+- 写冲突；
+- stale context；
+- 基于旧代码继续工作；
+- ownership 不清；
+- 最后整合成本超过并行节省的时间。
+
+所以默认：
+
+```text
+小型 / 强耦合实现
+→ Root 自己写
+
+较大但边界明确的实现
+→ 内置 worker 可以接管
+
+多个 substantial write 真要并行
+→ 分开 Git worktree
+```
+
+Worker 只有在 `scope / ownership / behavior / constraints / acceptance / validation` 清楚时才值得委派。
+
+这牺牲一部分最大并发，换取更清晰的 ownership 和更少的写冲突。
+
+---
+
+## 7. 为什么没有长期 `tester`？
+
+“测试”不是一个稳定统一的跨项目角色。
+
+它可能是：
+
+```text
+unit test
+integration test
+compiler diagnostics
+browser reproduction
+CI logs
+benchmark
+migration validation
+flaky test triage
+```
+
+一个 generic `tester.toml` 最后往往只是“跑测试并汇报”，专门化价值很低。
+
+Foundry 因此选择：
+
+```text
+小型 / 关键验证
+→ Root
+
+大型 / noisy / 独立验证
+→ 临时 verifier
+
+反复出现的特殊验证能力
+→ 再考虑真正的 Custom Agent
+```
+
+例如一个有稳定 browser tooling 的 `browser_debugger`，就比 generic `tester` 更值得长期存在。
+
+---
+
+## 8. 为什么没有 Planner / Architect？
+
+Root 拥有最完整的信息：
+
+```text
+用户目标
++ 对话历史
++ requirements
++ repository evidence
++ Subagent 结果
++ 实现状态
++ final diff
++ tests / build / logs
+```
+
+如果强制变成：
+
+```text
+User → Root → Planner → Architect → Worker → Reviewer → Root
+```
+
+会增加上下文转述，并让“谁负责最终判断”更模糊。
+
+Foundry 选择：
+
+> **高层判断留在拥有最多上下文的 Root；Subagent 主要用于隔离证据、独立判断和边界明确的执行。**
+
+这不代表 Architect 永远没价值。某个大型项目如果反复存在稳定的架构领域，并且能证明独立 context/tooling 有收益，可以自行增加专门 Agent；baseline 不预装。
+
+---
+
+## 9. Research 为什么默认临时？
+
+泛化 Research 太宽。
+
+偶尔查文档或背景资料时，临时 research 足够。
+
+真正值得长期存在的通常类似：
+
+```text
+docs_researcher
++ 固定 docs MCP
++ 明确领域
++ 稳定返回证据格式
+```
+
+也就是：
+
+> **长期 Agent 应围绕稳定能力建立，而不是围绕宽泛职位名称建立。**
+
+---
+
+## 10. 更深层原则：Read 并发便宜，Write 并发昂贵
+
+这是 Foundry 很多选择背后的共同原因。
+
+### Read-only
+
+```text
+Explorer ─┐
+Reviewer ─┼→ Root 汇总
+Research ─┘
+```
+
+通常比较安全：
+
+- 不修改共享 source state；
+- 不会互相覆盖；
+- 可独立收集证据；
+- 主要成本是最后汇总。
+
+### Write-heavy
+
+```text
+Writer A → source
+Writer B → source
+```
+
+还需要处理：
+
+- state coordination；
+- stale assumptions；
+- ownership；
+- merge / integration。
+
+因此 Foundry 更愿意把**长期 Agent 名额给只读 specialist**，写 Agent 按需出现。
+
+---
+
+## 11. 什么情况下才新增第三个长期 Agent？
+
+不能因为“软件团队里通常有这个职位”就加。
+
+新 persistent agent 最好满足大部分条件：
+
+1. **高频**：很多重要任务反复需要；
+2. **边界稳定**：Mission 可以长期写得很窄、很清楚；
+3. **可重复收益**：不是一次性便利；
+4. **隔离有价值**：独立 context 能改善质量或减少噪声；
+5. **固定配置有意义**：model / effort / sandbox / MCP / tools / skills 值得固定；
+6. **ownership 清楚**：不会制造多余 writer 冲突；
+7. **内置能力不够**：built-in agent 或临时 delegation 不足以表达 specialization；
+8. **可以 eval**：能写场景说明什么时候该调用、改善了什么。
+
+可能合理的未来角色：
+
+- browser debugger + 专门 browser tooling；
+- docs researcher + 稳定 docs MCP；
+- 特殊安全流程的 security specialist；
+- 长期复杂数据库项目里的 DB specialist。
+
+默认不因为名字听起来合理就加入：
+
+```text
+architect
+implementer
+tester
+researcher
 ```
 
 ---
 
-## 3. 先理解仓库结构
+## 12. Foundry 主动接受哪些妥协？
+
+| 选择 | 收益 | 代价 |
+| --- | --- | --- |
+| 少量长期 Agent | 简单、易理解、易维护 | 特殊项目不够细分 |
+| Custom `repo_explorer` | 固定窄行为和 sandbox/model contract | 与 built-in explorer 重叠 |
+| Custom `reviewer` + 原生 `/review` | 同时支持显式 Review 和自主 cold review | 两套能力部分重叠 |
+| 一个 checkout 一个 writer | ownership 清晰，减少 stale write | 牺牲部分 write parallelism |
+| 默认一层 fan-out / fan-in | 流程容易理解和收口 | recursive delegation 需要 Root 授权 |
+| Planner / Architect 留 Root | 减少上下文转述和责任分裂 | baseline 不强制第二套高层意见 |
+
+这些是默认值，不是不可修改的真理。如果长期 evidence 表明另一种结构更好，就应该演进。
+
+---
+
+## 13. Evals 如何表达这些设计？
+
+`evals/scenarios.json` 当前表达：
+
+```text
+很小、范围明确的修改
+→ Root only
+
+跨模块 bug，execution path 不清楚
+→ repo_explorer → Root 实现 → reviewer
+
+边界清楚的机械实现
+→ built-in worker 可实现 → reviewer → Root 验证
+
+大型 / noisy verification
+→ 临时 verifier
+
+两个 substantial write 要并行
+→ 分开 worktree，不在同一 checkout 多 writer
+```
+
+Evals 不是硬编码路由器，而是 policy 的方向性 contract：防止未来修改时设计悄悄跑偏。
+
+---
+
+## 14. 最重要的运行时规则
+
+1. **Root 保留最终责任**：目标、拆解、集成、最终验证、最终答案都由 Root 收口。
+2. **Root 默认写代码**：delegated write 是可选优化，不是固定流程。
+3. **一个 checkout 同时一个 source-code writer**。
+4. **substantial parallel writes 使用不同 worktree**。
+5. **默认一层 fan-out / fan-in**，Subagent 不自行递归 spawn。
+6. **只有 delegation 真正带来收益时才委派**。
+7. **每个 Subagent 都拿明确 Mission Contract**。
+8. **Agent 互相同意不等于正确**，最终回到 diff / tests / build / logs / source / reproduction 等证据。
+
+Mission 至少说明：
+
+```text
+goal
+scope / ownership
+known facts / constraints
+acceptance evidence
+expected return
+stop condition
+```
+
+真正的 runtime policy：[`runtime/AGENTS.fragment.md`](./runtime/AGENTS.fragment.md)
+
+完整设计记录：[`.agents/skills/install-codex-agent-foundry/references/design.md`](./.agents/skills/install-codex-agent-foundry/references/design.md)
+
+---
+
+## 15. 仓库结构：核心产品、交付层、质量层
 
 ```text
 codex-agent-foundry/
 ├── runtime/                       # 核心产品 / 唯一 source of truth
 │   ├── AGENTS.fragment.md
-│   └── .codex/
-│       ├── config.toml
-│       └── agents/
-│           ├── repo_explorer.toml
-│           └── reviewer.toml
-│
-├── evals/                         # 协作策略场景
-│   ├── README.md
-│   └── scenarios.json
-│
+│   └── .codex/agents/
+│       ├── repo_explorer.toml
+│       └── reviewer.toml
+├── evals/                         # policy contract
 ├── .agents/skills/
 │   └── install-codex-agent-foundry/
 │       ├── SKILL.md
-│       ├── agents/openai.yaml
-│       ├── scripts/
-│       │   ├── install.py
-│       │   └── verify.py
-│       ├── assets/project/        # runtime/ 的生成副本
+│       ├── scripts/install.py
+│       ├── scripts/verify.py
+│       ├── assets/project/        # runtime/ 生成发布副本
 │       └── references/design.md
-│
-├── scripts/
-│   └── package_runtime.py
-│
+├── scripts/package_runtime.py
 ├── tests/
-│   ├── test_installer.py
-│   ├── test_cli.py
-│   ├── test_runtime.py
-│   └── test_hardening.py
-│
 ├── .github/workflows/test.yml
-├── AGENTS.md                      # 开发 Foundry 自己时使用
-├── README.md
-└── README.zh-CN.md
+└── AGENTS.md                      # 开发 Foundry 自己时使用
 ```
 
-最重要的是先区分三层：
+`runtime/` 与 `assets/project/` 重复是有意的：
 
 ```text
-runtime/       = 核心产品
-Installer Skill = 交付工具
-tests / CI     = 质量保障
+runtime/                         ← 人修改的源码
+   ↓ package_runtime.py
+Skill/assets/project/            ← 自动生成的分发副本
 ```
+
+只有 `runtime/` 是 source of truth；不要手工修改生成副本。
 
 ---
 
-## 4. 为什么 `runtime/` 和 Skill 下面有一份重复内容？
-
-这是有意设计的。
-
-```text
-runtime/                                      ← 人修改这里
-    │
-    │ scripts/package_runtime.py
-    ▼
-.agents/skills/install-codex-agent-foundry/
-└── assets/project/                           ← 自动生成的发布副本
-```
-
-两边当前内容应完全一致，但只有：
-
-```text
-runtime/
-```
-
-是 **source of truth**。
-
-为什么还需要 `assets/project/`？
-
-因为 Installer Skill 以后可能被单独安装到全局 Skills。如果 Skill 离开这个 Git 仓库，它仍然必须自己携带 Runtime 模板才能完成安装。
-
-所以这更像：
-
-```text
-src/   → 源码
-dist/  → 发布产物
-```
-
-而不是“两套配置同时维护”。
-
-**不要手工修改 `assets/project/`。**
-
-修改 `runtime/` 后运行：
+## 16. 安装与验证
 
 ```bash
-python3 scripts/package_runtime.py
-python3 scripts/package_runtime.py --check
+# 只看完整计划，不写文件
+python3 .agents/skills/install-codex-agent-foundry/scripts/install.py /path/to/repo --check
+
+# 安装
+python3 .agents/skills/install-codex-agent-foundry/scripts/install.py /path/to/repo
+
+# 验证
+python3 .agents/skills/install-codex-agent-foundry/scripts/verify.py /path/to/repo
 ```
 
-CI 会阻止两边发生漂移。
+Installer 使用 **Plan → Apply**：冲突会在写入前阻塞；中途失败会回滚已经修改的路径。
 
----
-
-## 5. 每个主要目录/文件是干什么的？
-
-| 路径 | 作用 |
-| --- | --- |
-| `runtime/` | **核心产品**，保存多 Agent Runtime 规范 |
-| `runtime/AGENTS.fragment.md` | 安装到业务项目里的 orchestration policy |
-| `runtime/.codex/config.toml` | Foundry 需要的最小 Codex 项目配置 |
-| `runtime/.codex/agents/repo_explorer.toml` | Explorer Custom Agent 配置 |
-| `runtime/.codex/agents/reviewer.toml` | Reviewer Custom Agent 配置 |
-| `evals/` | 典型协作场景，用来检查策略修改后是否“跑偏” |
-| `.agents/skills/.../SKILL.md` | Installer Skill 的工作说明 |
-| `.../scripts/install.py` | 规划、安装、升级、冲突保护、rollback、model override、uninstall |
-| `.../scripts/verify.py` | 验证目标项目里的 Foundry 是否完整、是否 drift |
-| `.../assets/project/` | `runtime/` 的生成副本，用于 Skill 自包含分发 |
-| `scripts/package_runtime.py` | `runtime/ → Skill assets` 打包和一致性检查 |
-| `tests/test_installer.py` | Plan / Apply / rollback / state / uninstall 等内部语义测试 |
-| `tests/test_cli.py` | 从真正 CLI 角度测试 stdout、exit code、dry-run、BLOCKED PLAN |
-| `tests/test_runtime.py` | Runtime TOML、协作不变量、eval、模型默认值来源、打包同步 |
-| `tests/test_hardening.py` | 独立 Review 后补充的边界回归测试 |
-| `.github/workflows/test.yml` | GitHub 自动在 Python 3.11 / 3.12 / 3.13 上测试 |
-| 根目录 `AGENTS.md` | **开发 Foundry 本身**时 Codex 应遵守的规则 |
-
----
-
-## 6. 根目录 `AGENTS.md` 和 `runtime/AGENTS.fragment.md` 有什么区别？
-
-这是很容易混淆的一点。
-
-### 根目录 `AGENTS.md`
-
-作用：
-
-> 当 Codex 在开发 **这个 Foundry 仓库本身** 时使用。
-
-例如规定：
-
-- `runtime/` 是 source of truth；
-- generated assets 不应手工修改；
-- installer 必须保守、可回滚；
-- 修改后必须跑 tests。
-
-### `runtime/AGENTS.fragment.md`
-
-作用：
-
-> 安装到你的业务项目之后，规范 **业务项目里的多 Agent 协作**。
-
-所以两者不是重复文件。
-
----
-
-## 7. 如何安装到业务项目？
-
-假设目标项目是：
-
-```text
-~/work/my-project
-```
-
-### 第一步：只看计划，不写文件
+需要时可覆盖模型：
 
 ```bash
-python3 .agents/skills/install-codex-agent-foundry/scripts/install.py \
-  ~/work/my-project \
-  --check
-```
-
-### 第二步：执行安装
-
-```bash
-python3 .agents/skills/install-codex-agent-foundry/scripts/install.py \
-  ~/work/my-project
-```
-
-### 第三步：验证
-
-```bash
-python3 .agents/skills/install-codex-agent-foundry/scripts/verify.py \
-  ~/work/my-project
-```
-
-安装后目标项目大致会变成：
-
-```text
-my-project/
-├── AGENTS.md                  # 原有内容 + Foundry managed block
-└── .codex/
-    ├── config.toml
-    ├── .agent-foundry.json    # 版本 / ownership / model 状态
-    └── agents/
-        ├── repo_explorer.toml
-        └── reviewer.toml
-```
-
-Codex 日常真正使用的是：
-
-```text
-AGENTS.md
-.codex/config.toml
-.codex/agents/*.toml
-```
-
-`.agent-foundry.json` 主要给安装、升级、验证和卸载记录状态。
-
----
-
-## 8. Installer 为什么强调 Plan → Apply？
-
-Installer 不会“先试着改一次，再正式改一次”。
-
-它先构建一份完整 Plan：
-
-```text
-inspect
-   ↓
-build complete Plan
-   ↓
-├── --check      → 只显示 Plan
-├── conflict     → BLOCKED PLAN，零写入
-└── safe         → apply 同一份 Plan
-                     ↓
-                  verify / rollback
-```
-
-Plan 会明确包含：
-
-```text
-create
-update
-backup
-delete
-unchanged
-conflict
-```
-
-其中也包括：
-
-```text
-.codex/.agent-foundry.json
-```
-
-以及 `--force` 时将创建的 backup 文件。
-
-### 如果有冲突
-
-例如业务项目已经有自己的：
-
-```text
-.codex/agents/reviewer.toml
-```
-
-正常安装会显示：
-
-```text
-BLOCKED PLAN
-...
-conflict reviewer.toml
-...
-No files were changed.
-```
-
-不会先写一半再失败。
-
-### 如果 apply 中途失败
-
-已经修改的文件会 rollback；事务中新建的空目录也会尽量清理。
-
-更新已有文件时还会保留原来的 POSIX file mode。
-
----
-
-## 9. 自定义 Explorer / Reviewer 模型
-
-默认值来自 Runtime profile 本身：
-
-```text
-repo_explorer → gpt-5.6-terra / medium
-reviewer      → gpt-5.6 / high
-```
-
-Installer 和 verifier 不单独维护另一套默认模型，所以 `runtime/` 仍然是唯一 source of truth。
-
-如果你的账户可用模型不同，可以安装时覆盖：
-
-```bash
-python3 .../install.py ~/work/my-project \
+python3 .../install.py /path/to/repo \
   --explorer-model <model> \
   --reviewer-model <model>
 ```
 
-选择会记录在：
-
-```text
-.codex/.agent-foundry.json
-```
-
-之后 `verify.py` 会把它当作有意配置，而不是误判成 drift。
-
----
-
-## 10. 如何卸载？
-
-先看计划：
+卸载：
 
 ```bash
-python3 .../install.py ~/work/my-project --uninstall --check
+python3 .../install.py /path/to/repo --uninstall --check
+python3 .../install.py /path/to/repo --uninstall
 ```
-
-再执行：
-
-```bash
-python3 .../install.py ~/work/my-project --uninstall
-```
-
-卸载只处理 Foundry 自己管理的内容：
-
-- 删除 Foundry managed AGENTS block；
-- 删除没有被用户修改过的 Foundry agent profile；
-- 删除 Foundry state；
-- 在能证明安全的情况下恢复 Foundry 添加的 concurrency 配置。
-
-用户原本的 `AGENTS.md` 内容和用户自己的配置默认保留。
 
 ---
 
-## 11. `evals/` 是什么？
+## 17. 开发 Foundry
 
-Installer 测试只能证明：
-
-> “文件有没有正确装进去。”
-
-但 Foundry 真正的核心是：
-
-> “多 Agent 应该怎么协作。”
-
-所以 `evals/scenarios.json` 保存典型协作场景，例如：
-
-- typo 不应该无意义 spawn agent；
-- 不清楚的跨模块 bug 应优先 Explorer；
-- 边界明确的实现可以考虑 Worker；
-- noisy verification 可以用临时 verifier；
-- 两个大任务并行写代码应该使用 worktree，而不是共享 checkout。
-
-这些场景是 Runtime policy 的 contract。
-
----
-
-## 12. 开发 Foundry 时怎么验证？
-
-修改协作规范时，**先改 `runtime/`**。
-
-然后运行：
+修改协作行为时先改 `runtime/`；如果预期路由变化，也同步更新 `evals/`。
 
 ```bash
 python3 scripts/package_runtime.py
@@ -503,46 +552,27 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q .agents/skills/install-codex-agent-foundry/scripts scripts tests
 ```
 
-CI 会在 Python 3.11、3.12、3.13 上执行 package check 和完整测试。
-
 ---
 
-## 13. 可以直接作为 Skill 使用吗？
-
-可以，但要注意：
-
-> **Skill 是安装入口，不是 Foundry 本体。**
-
-当 Codex 打开这个仓库时可以调用：
+## 18. 最后一张图
 
 ```text
-$install-codex-agent-foundry /path/to/repo
+Root
+├── 目标 / 架构 / 集成 / 最终责任
+├── 默认 writer
+│
+├── repo_explorer      ← 长期、只读、证据调查
+├── reviewer           ← 长期、只读、独立 cold review
+│
+├── built-in worker    ← 按需、边界明确时实现
+├── temp verifier      ← 按需、noisy validation
+└── temp research      ← 按需；稳定 specialization 出现后才长期化
+
+多 substantial writers
+→ 不共享 checkout
+→ Git worktrees
 ```
 
-如果把 Installer Skill 安装成全局 Skill，以后在其他项目里也可以继续使用同样命令。
+这就是 Foundry 当前最核心的设计取舍。
 
----
-
-## 14. 最后用一句话区分所有东西
-
-```text
-runtime/
-= Codex 多 Agent 协作规范本体
-
-.agents/.../SKILL.md + install.py + verify.py
-= 把规范安全装进项目的工具
-
-.agents/.../assets/project/
-= runtime/ 的生成发布副本，不是第二套源码
-
-evals/
-= 检查协作策略方向是否正确
-
-tests/ + CI
-= 检查安装器、Runtime 和边界条件是否可靠
-
-根 AGENTS.md
-= 开发 Foundry 自己时的仓库规则
-```
-
-官方参考：[Build skills](https://developers.openai.com/codex/skills) · [Subagents](https://developers.openai.com/codex/subagents)
+官方参考：[Subagents](https://developers.openai.com/codex/subagents) · [Developer commands / review](https://developers.openai.com/codex/cli/slash-commands) · [Build skills](https://developers.openai.com/codex/skills)
