@@ -276,7 +276,55 @@ Installer behavior follows one rule: build one complete plan first, then apply e
 - state records managed agents, model selections, and whether Foundry introduced the concurrency key;
 - uninstall removes only Foundry-owned state and preserves user-owned configuration.
 
+The plan also surfaces the selected specialist models and runtime provenance before any write. Idempotent steps describe their current state rather than reusing an update-oriented detail string.
+
+After a successful install, the CLI tells the operator to start a new Codex session in the target repository. Project-level `AGENTS.md` and custom agent profiles are treated as session-start configuration; the installer does not assume an already-running session has reloaded them.
+
 The installer exists to preserve the runtime policy safely; installer complexity should not drive the collaboration design.
+
+## Python compatibility
+
+Python 3.11+ is the zero-dependency baseline because `tomllib` is part of the standard library.
+
+Python 3.10 is supported with the `tomli` fallback. If `tomli` is absent, installer/verifier startup must fail with an actionable dependency message instead of exposing `ModuleNotFoundError: tomllib`.
+
+This is tested separately from the normal Python 3.10 suite so the friendly failure path cannot regress silently.
+
+## Runtime manifest and provenance
+
+`runtime/manifest.json` defines:
+
+- `runtime_version`: semantic version of the packaged collaboration runtime;
+- `files`: the canonical file set included in the runtime fingerprint/package.
+
+The generated Skill copy includes the same manifest. CI/package checks require source and generated assets to match.
+
+New installation state records:
+
+- `runtime_version`;
+- `runtime_sha256`;
+- `source_revision`.
+
+`runtime_sha256` is deterministic over the manifest path/content plus each manifest-listed runtime path/content. It is the authoritative content fingerprint.
+
+`source_revision` is deliberately best effort. It is recorded only when the installer is running inside a real Foundry Git checkout, the source `runtime/` exactly matches the packaged Skill assets, the relevant source/package paths are clean, and a Git HEAD can be resolved. Distributed Skills without Git metadata store `null` rather than inventing a revision.
+
+Legacy state without provenance remains valid for compatibility. A subsequent install enriches it with the new fields. Partial provenance is rejected because it is ambiguous/tampered state.
+
+## Optional Codex runtime verification
+
+Structural `verify.py` proves repository files and Foundry state are internally consistent. It does not by itself prove that a local Codex binary will accept the project.
+
+`verify.py <target> --runtime-check` adds a local runtime probe:
+
+- locate `codex` in `PATH`;
+- run `codex --version`;
+- run Codex with `--strict-config` from the target project;
+- query `codex debug models --bundled` and parse the local bundled model catalog;
+- report the installed Explorer/Reviewer model and reasoning effort;
+- note whether each selected model appears in that bundled catalog.
+
+The bundled model catalog is a **local binary capability signal, not an account-entitlement check**. A missing bundled model is therefore a warning, not proof that the authenticated account cannot use it. The verifier explicitly states that account model availability remains unverified and should be confirmed in a new authenticated Codex session.
 
 ## Model routing
 
@@ -287,4 +335,5 @@ Model choices are implementation details of roles, not reasons for creating role
 ## References
 
 - Codex Subagents: https://developers.openai.com/codex/subagents
+- Codex CLI reference (`--strict-config`, `debug models --bundled`): https://developers.openai.com/codex/cli/reference
 - Codex developer commands / review workflow: https://developers.openai.com/codex/cli/slash-commands

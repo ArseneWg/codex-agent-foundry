@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / ".agents/skills/install-codex-agent-foundry/scripts/install.py"
 
+
 class CLITests(unittest.TestCase):
     def run_cli(self, *args):
         return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)], text=True, capture_output=True)
@@ -18,6 +19,9 @@ class CLITests(unittest.TestCase):
             self.assertIn("PLAN:", result.stdout)
             self.assertIn(".codex/.agent-foundry.json", result.stdout)
             self.assertIn("AGENTS.md", result.stdout)
+            self.assertIn("Selected models (account availability not checked):", result.stdout)
+            self.assertIn("repo_explorer: gpt-5.6-terra / medium", result.stdout)
+            self.assertIn("reviewer: gpt-5.6 / high", result.stdout)
             self.assertEqual(list(Path(td).iterdir()), [])
 
     def test_conflict_reports_blocked_plan_and_no_writes(self):
@@ -52,6 +56,7 @@ class CLITests(unittest.TestCase):
             self.assertEqual(check.returncode, 0)
             applied = self.run_cli(root)
             self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+
             def paths(output):
                 found = set()
                 for line in output.splitlines():
@@ -61,7 +66,18 @@ class CLITests(unittest.TestCase):
                             path = parts[2].split(":", 1)[0]
                             found.add(path)
                 return found
+
             self.assertEqual(paths(check.stdout), paths(applied.stdout))
+            self.assertIn("Start a new Codex session in this project to load Foundry.", applied.stdout)
+
+    def test_idempotent_check_uses_current_wording(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self.assertEqual(self.run_cli(root).returncode, 0)
+            check = self.run_cli(root, "--check")
+            self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+            self.assertIn("unchanged AGENTS.md: managed block already current", check.stdout)
+            self.assertNotIn("unchanged AGENTS.md: update managed Foundry block", check.stdout)
 
     def test_uninstall_check_and_apply(self):
         with tempfile.TemporaryDirectory() as td:
@@ -74,6 +90,8 @@ class CLITests(unittest.TestCase):
             applied = self.run_cli(root, "--uninstall")
             self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
             self.assertFalse((root / ".codex/.agent-foundry.json").exists())
+            self.assertNotIn("Start a new Codex session", applied.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

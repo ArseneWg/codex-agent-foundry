@@ -18,6 +18,7 @@ assert spec.loader is not None
 sys.modules[spec.name] = mod
 spec.loader.exec_module(mod)
 
+
 class InstallerHardeningTests(unittest.TestCase):
     def test_uninstall_restores_existing_config_without_agents_table(self):
         cases = ["", 'model = "example"\n', '[features]\nfoo = true\n']
@@ -61,7 +62,7 @@ class InstallerHardeningTests(unittest.TestCase):
             self.assertEqual(len(backups), 1)
             self.assertTrue(backups[0].path.name.endswith("foundry-backup-2"))
 
-    def test_verify_rejects_incomplete_state_schema(self):
+    def test_verify_rejects_incomplete_core_state_schema(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             mod.apply_plan(mod.build_install_plan(root))
@@ -72,6 +73,18 @@ class InstallerHardeningTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(VERIFY), str(root)], text=True, capture_output=True, check=False)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("missing required fields", result.stdout)
+
+    def test_verify_rejects_partial_provenance(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            mod.apply_plan(mod.build_install_plan(root))
+            state_path = root / ".codex/.agent-foundry.json"
+            state = json.loads(state_path.read_text())
+            del state["runtime_sha256"]
+            state_path.write_text(json.dumps(state))
+            result = subprocess.run([sys.executable, str(VERIFY), str(root)], text=True, capture_output=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("provenance is incomplete", result.stdout)
 
     def test_verify_rejects_managed_file_path_that_is_directory(self):
         with tempfile.TemporaryDirectory() as td:
@@ -93,6 +106,7 @@ class InstallerHardeningTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("not valid UTF-8", result.stdout)
             self.assertNotIn("Traceback", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

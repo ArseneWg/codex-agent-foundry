@@ -1,0 +1,9 @@
+{
+  "runtime_version": "1",
+  "files": [
+    "AGENTS.fragment.md",
+    ".codex/config.toml",
+    ".codex/agents/repo_explorer.toml",
+    ".codex/agents/reviewer.toml"
+  ]
+}

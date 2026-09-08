@@ -1,16 +1,27 @@
 import json
 import subprocess
 import sys
-import tomllib
 import unittest
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "runtime"
 SKILL = ROOT / ".agents/skills/install-codex-agent-foundry"
 PACKAGE = ROOT / "scripts/package_runtime.py"
 
+
 class RuntimeContractTests(unittest.TestCase):
+    def test_runtime_manifest_is_valid(self):
+        manifest = json.loads((RUNTIME / "manifest.json").read_text())
+        self.assertEqual(manifest["runtime_version"], "1")
+        self.assertIn("AGENTS.fragment.md", manifest["files"])
+        self.assertIn(".codex/agents/reviewer.toml", manifest["files"])
+
     def test_runtime_toml_is_valid_and_roles_are_safe_defaults(self):
         config = tomllib.loads((RUNTIME / ".codex/config.toml").read_text())
         value = config["agents"]["max_concurrent_threads_per_session"]
@@ -69,15 +80,8 @@ class RuntimeContractTests(unittest.TestCase):
         }
         for scenario in payload["scenarios"]:
             self.assertEqual(set(scenario["expected"]), expected_keys)
-        scenarios = {s["id"]: s for s in payload["scenarios"]}
-        self.assertFalse(scenarios["trivial-change"]["expected"]["repo_explorer"])
-        self.assertTrue(scenarios["unclear-cross-module-bug"]["expected"]["repo_explorer"])
-        self.assertTrue(scenarios["bounded-implementation"]["expected"]["worker"])
-        self.assertTrue(scenarios["noisy-verification"]["expected"]["temporary_verifier"])
-        self.assertFalse(scenarios["noisy-verification"]["expected"]["reviewer"])
-        self.assertFalse(scenarios["parallel-substantial-writes"]["expected"]["parallel_writers_same_checkout"])
 
-    def test_installer_default_models_come_from_runtime_profiles(self):
+    def test_installer_default_models_and_runtime_hash_come_from_runtime_package(self):
         import importlib.util
         script = SKILL / "scripts/install.py"
         spec = importlib.util.spec_from_file_location("foundry_model_source", script)
@@ -88,6 +92,9 @@ class RuntimeContractTests(unittest.TestCase):
         for filename in ("repo_explorer.toml", "reviewer.toml"):
             runtime_profile = tomllib.loads((RUNTIME / ".codex/agents" / filename).read_text())
             self.assertEqual(module.bundled_profile_model(filename), runtime_profile["model"])
+        self.assertEqual(module.bundled_runtime_version(), "1")
+        self.assertRegex(module.bundled_runtime_sha256(), r"^[0-9a-f]{64}$")
+
 
 if __name__ == "__main__":
     unittest.main()

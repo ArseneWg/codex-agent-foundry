@@ -265,6 +265,7 @@ The canonical runtime policy lives in [`runtime/AGENTS.fragment.md`](./runtime/A
 ```text
 .
 ├── runtime/                       # core product / source of truth
+│   ├── manifest.json              # runtime semantic version + packaged file list
 │   ├── AGENTS.fragment.md
 │   └── .codex/
 │       ├── config.toml
@@ -278,7 +279,7 @@ The canonical runtime policy lives in [`runtime/AGENTS.fragment.md`](./runtime/A
 │       ├── scripts/
 │       │   ├── install.py
 │       │   └── verify.py
-│       ├── assets/project/        # generated copy of runtime/
+│       ├── assets/project/        # generated copy of runtime/, including manifest
 │       └── references/design.md
 ├── scripts/package_runtime.py
 ├── tests/
@@ -314,6 +315,20 @@ CI fails if the generated package drifts from `runtime/`.
 
 ## Install into a repository
 
+### Requirements
+
+- **Python 3.11+ is recommended.** Foundry uses only the Python standard library on 3.11+.
+- **Python 3.10 is supported with [`tomli`](https://pypi.org/project/tomli/).** This matters on systems such as Ubuntu 22.04 where the system Python is commonly 3.10:
+
+  ```bash
+  python3 -m pip install tomli
+  ```
+
+  If Python 3.10 does not have `tomli`, the installer and verifier exit with a clear dependency message instead of a `ModuleNotFoundError` traceback.
+- The **Codex CLI is not required for normal install or structural verification**. It is required only for the optional `--runtime-check` described below.
+
+### Preview, apply, verify
+
 From a clone of Foundry:
 
 ```bash
@@ -322,6 +337,32 @@ python3 .agents/skills/install-codex-agent-foundry/scripts/install.py /path/to/r
 python3 .agents/skills/install-codex-agent-foundry/scripts/verify.py /path/to/repo
 ```
 
+The `--check` plan is intentionally operator-readable. Before writing anything it shows:
+
+```text
+Runtime: 1 sha256=<runtime content hash>
+Source revision: <git sha or unavailable>
+Selected models (account availability not checked):
+  repo_explorer: gpt-5.6-terra / medium
+  reviewer: gpt-5.6 / high
+```
+
+It then lists every create/update/backup/delete/unchanged/conflict path. Idempotent entries use current-state wording such as:
+
+```text
+unchanged AGENTS.md: managed block already current
+```
+
+rather than mixing `unchanged` with an `update` description.
+
+After a successful install the CLI prints:
+
+```text
+Start a new Codex session in this project to load Foundry.
+```
+
+Project-level `AGENTS.md` and `.codex/agents/` should be treated as session-start configuration; opening a new project session avoids relying on a session that started before Foundry was installed.
+
 After installation, the target repository contains roughly:
 
 ```text
@@ -329,13 +370,62 @@ your-project/
 ├── AGENTS.md                  # existing content + Foundry managed block
 └── .codex/
     ├── config.toml
-    ├── .agent-foundry.json    # Foundry ownership/version/model state
+    ├── .agent-foundry.json    # ownership, model selection and provenance
     └── agents/
         ├── repo_explorer.toml
         └── reviewer.toml
 ```
 
 The installer follows **plan → apply**. `--check` builds the same complete plan a successful apply would execute. Conflicts block the whole apply before any write; mid-apply failures roll back changed paths.
+
+### Runtime provenance
+
+New installations record provenance in `.codex/.agent-foundry.json`:
+
+```json
+{
+  "runtime_version": "1",
+  "source_revision": "<git commit sha or null>",
+  "runtime_sha256": "<sha256 of the packaged runtime>",
+  "models": {
+    "repo_explorer": "gpt-5.6-terra",
+    "reviewer": "gpt-5.6"
+  }
+}
+```
+
+`runtime_version` comes from `runtime/manifest.json`. `runtime_sha256` is a deterministic fingerprint of the manifest plus the packaged runtime files.
+
+`source_revision` is deliberately **best effort**. It is recorded only when the installer is running from a real, clean Foundry Git checkout whose `runtime/` matches the packaged Skill assets. When a Skill is distributed without Git metadata, `source_revision` is `null`; the content hash remains the authoritative runtime fingerprint.
+
+Legacy state files without provenance are still accepted. Re-running the installer enriches them with the new fields.
+
+### Optional real Codex runtime check
+
+Structural verification confirms files, TOML, managed state, models, provenance, and drift. To additionally exercise the local Codex CLI:
+
+```bash
+python3 .agents/skills/install-codex-agent-foundry/scripts/verify.py \
+  /path/to/repo \
+  --runtime-check
+```
+
+The runtime check verifies:
+
+- `codex` exists in `PATH`;
+- `codex --version` runs;
+- Codex accepts the project with `--strict-config`;
+- `codex debug models --bundled` returns a parseable bundled model catalog;
+- the selected Explorer/Reviewer model and reasoning effort are shown, together with whether each model appears in that local bundled catalog.
+
+It intentionally does **not** claim to verify account entitlements. The verifier always makes this limitation explicit:
+
+```text
+Account model availability is not verified by --runtime-check;
+start a new authenticated Codex session to confirm access.
+```
+
+A model missing from the local bundled catalog is a warning rather than proof that the account cannot use it, because the refreshed/remote catalog may differ.
 
 ### Optional model overrides
 
@@ -360,7 +450,7 @@ Uninstall removes only Foundry-owned state and preserves unrelated project confi
 
 ## Development and validation
 
-When changing orchestration behavior, edit `runtime/` first, update `evals/` when the expected routing contract changes, then run:
+When changing orchestration behavior, edit `runtime/` first, update `runtime/manifest.json` when the runtime semantic version or packaged file set changes, update `evals/` when the expected routing contract changes, then run:
 
 ```bash
 python3 scripts/package_runtime.py
@@ -368,6 +458,8 @@ python3 scripts/package_runtime.py --check
 python3 -m unittest discover -s tests -v
 python3 -m compileall -q .agents/skills/install-codex-agent-foundry/scripts scripts tests
 ```
+
+CI runs the full suite on Python 3.10 (with `tomli`), 3.11, 3.12, and 3.13, plus a Python 3.10 smoke test that verifies the no-`tomli` error is actionable.
 
 ## Current Codex assumptions
 
@@ -379,4 +471,4 @@ python3 -m compileall -q .agents/skills/install-codex-agent-foundry/scripts scri
 - `reviewer` currently defaults to `gpt-5.6` / `high`.
 - Model availability may differ by account/client, so explicit model overrides are supported.
 
-Official references: [Subagents](https://developers.openai.com/codex/subagents) · [Developer commands / code review](https://developers.openai.com/codex/cli/slash-commands) · [Build skills](https://developers.openai.com/codex/skills)
+Official references: [Subagents](https://developers.openai.com/codex/subagents) · [CLI reference](https://developers.openai.com/codex/cli/reference) · [Developer commands / code review](https://developers.openai.com/codex/cli/slash-commands) · [Build skills](https://developers.openai.com/codex/skills)

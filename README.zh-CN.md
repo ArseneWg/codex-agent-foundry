@@ -479,6 +479,7 @@ stop condition
 ```text
 codex-agent-foundry/
 ├── runtime/                       # 核心产品 / 唯一 source of truth
+│   ├── manifest.json              # Runtime 版本 + 打包文件清单
 │   ├── AGENTS.fragment.md
 │   └── .codex/agents/
 │       ├── repo_explorer.toml
@@ -489,7 +490,7 @@ codex-agent-foundry/
 │       ├── SKILL.md
 │       ├── scripts/install.py
 │       ├── scripts/verify.py
-│       ├── assets/project/        # runtime/ 生成发布副本
+│       ├── assets/project/        # runtime/ 生成发布副本，包含 manifest
 │       └── references/design.md
 ├── scripts/package_runtime.py
 ├── tests/
@@ -509,7 +510,38 @@ Skill/assets/project/            ← 自动生成的分发副本
 
 ---
 
-## 16. 安装与验证
+## 16. 安装前先看 Python 版本
+
+### 推荐：Python 3.11+
+
+Python 3.11+ 直接使用标准库 `tomllib`，Foundry 不需要额外 Python 依赖。
+
+### Python 3.10
+
+Ubuntu 22.04 等环境经常默认使用 Python 3.10。Python 3.10 没有标准库 `tomllib`，Foundry 支持使用 `tomli` fallback：
+
+```bash
+python3 -m pip install tomli
+```
+
+如果 Python 3.10 没有安装 `tomli`，`install.py` / `verify.py` 会明确提示：
+
+```text
+ERROR: Codex Agent Foundry requires Python 3.11+ or Python 3.10 with the 'tomli' package.
+On Python 3.10 run: python3 -m pip install tomli
+```
+
+而不是直接出现：
+
+```text
+ModuleNotFoundError: No module named 'tomllib'
+```
+
+普通安装和结构验证**不要求 `codex` 在 PATH**；只有后面的可选 `--runtime-check` 需要本机 Codex CLI。
+
+---
+
+## 17. 安装：先看完整 Plan，再写文件
 
 ```bash
 # 只看完整计划，不写文件
@@ -518,11 +550,185 @@ python3 .agents/skills/install-codex-agent-foundry/scripts/install.py /path/to/r
 # 安装
 python3 .agents/skills/install-codex-agent-foundry/scripts/install.py /path/to/repo
 
-# 验证
+# 结构验证
 python3 .agents/skills/install-codex-agent-foundry/scripts/verify.py /path/to/repo
 ```
 
-Installer 使用 **Plan → Apply**：冲突会在写入前阻塞；中途失败会回滚已经修改的路径。
+`--check` 顶部现在会直接显示 Runtime 来源和模型选择，例如：
+
+```text
+Runtime: 1 sha256=<runtime content hash>
+Source revision: <git sha 或 unavailable>
+Selected models (account availability not checked):
+  repo_explorer: gpt-5.6-terra / medium
+  reviewer: gpt-5.6 / high
+```
+
+这样在真正写文件之前，就能看到：
+
+- 当前 Runtime 版本；
+- Runtime 内容哈希；
+- 能否识别来源 Git revision；
+- Explorer / Reviewer 最终会用什么 model / reasoning effort。
+
+Plan 之后再列出：
+
+```text
+create
+update
+backup
+delete
+unchanged
+conflict
+```
+
+幂等状态的文案也更准确，例如：
+
+```text
+unchanged AGENTS.md: managed block already current
+```
+
+而不是：
+
+```text
+unchanged AGENTS.md: update managed Foundry block
+```
+
+Installer 仍使用 **Plan → Apply**：冲突会在写入前阻塞；中途失败会回滚已经修改的路径。
+
+安装成功后会明确提示：
+
+```text
+Start a new Codex session in this project to load Foundry.
+```
+
+因为当前 Codex 会话可能是在 Foundry 安装之前启动的。项目级 `AGENTS.md` 和 `.codex/agents/` 应按“新会话重新加载配置”来使用，不依赖旧会话动态感知全部变化。
+
+---
+
+## 18. `.agent-foundry.json` 现在记录 Runtime 来源
+
+安装后的目标项目大致包含：
+
+```text
+your-project/
+├── AGENTS.md
+└── .codex/
+    ├── config.toml
+    ├── .agent-foundry.json
+    └── agents/
+        ├── repo_explorer.toml
+        └── reviewer.toml
+```
+
+新的 state 会记录：
+
+```json
+{
+  "runtime_version": "1",
+  "source_revision": "<git commit sha 或 null>",
+  "runtime_sha256": "<packaged runtime sha256>",
+  "models": {
+    "repo_explorer": "gpt-5.6-terra",
+    "reviewer": "gpt-5.6"
+  }
+}
+```
+
+三项 provenance 的含义：
+
+### `runtime_version`
+
+来自：
+
+```text
+runtime/manifest.json
+```
+
+表示 Runtime 的语义版本，与 state schema 自己的 `version` 分开。
+
+### `runtime_sha256`
+
+对 Runtime manifest + 被打包 Runtime 文件做确定性 SHA-256，是最可靠的**内容指纹**。
+
+### `source_revision`
+
+这是 best-effort Git 来源信息。
+
+只有满足下面条件才记录真实 commit：
+
+- Installer 仍处在完整 Foundry Git checkout 中；
+- `runtime/` 与 Skill 打包资产一致；
+- Runtime / packaged assets 没有未提交修改；
+- 可以读取当前 Git HEAD。
+
+如果 Installer Skill 已经被单独分发、不带 `.git` 信息：
+
+```json
+"source_revision": null
+```
+
+这是正常状态，不是错误。此时 `runtime_sha256` 仍然是权威内容指纹。
+
+旧版 state 没有 provenance 仍然可以验证；重新执行一次 installer 后会自动补齐这些字段。
+
+---
+
+## 19. 可选：真实 Codex Runtime 检查
+
+普通 `verify.py` 主要验证：
+
+- Foundry 文件是否存在；
+- TOML 是否可解析；
+- managed block / profiles 有没有 drift；
+- state / model / provenance 是否一致。
+
+它不代表本机 Codex CLI 一定能加载这个项目。
+
+需要时可以额外执行：
+
+```bash
+python3 .agents/skills/install-codex-agent-foundry/scripts/verify.py \
+  /path/to/repo \
+  --runtime-check
+```
+
+它会检查：
+
+1. `codex` 是否在 `PATH`；
+2. `codex --version` 是否正常；
+3. 使用 `--strict-config` 让 Codex 严格解析目标项目配置；
+4. `codex debug models --bundled` 是否能返回可解析的本地 bundled model catalog；
+5. 当前安装的 Explorer / Reviewer 模型与 reasoning effort；
+6. 这些模型是否出现在**当前 Codex 二进制自带的 bundled catalog** 中。
+
+例如：
+
+```text
+Runtime check:
+- codex: /usr/local/bin/codex
+- version: codex-cli ...
+- strict config: passed
+- repo_explorer: gpt-5.6-terra / medium (bundled catalog: present)
+- reviewer: gpt-5.6 / high (bundled catalog: present)
+```
+
+这里有一个重要边界：
+
+> **`--runtime-check` 不验证当前登录账户是否真的拥有这些模型的权限。**
+
+Verifier 会明确提示：
+
+```text
+Account model availability is not verified by --runtime-check;
+start a new authenticated Codex session to confirm access.
+```
+
+如果某个模型没出现在本地 bundled catalog，只会给 warning，不会把它直接等同于“账户不可用”，因为 refreshed / remote model catalog 可能不同。
+
+---
+
+## 20. 模型覆盖与卸载
 
 需要时可覆盖模型：
 
@@ -532,6 +738,8 @@ python3 .../install.py /path/to/repo \
   --reviewer-model <model>
 ```
 
+最终选择会同时显示在 dry-run Plan，并写入 state，`verify.py` 会把它当作有意配置而不是 drift。
+
 卸载：
 
 ```bash
@@ -539,11 +747,19 @@ python3 .../install.py /path/to/repo --uninstall --check
 python3 .../install.py /path/to/repo --uninstall
 ```
 
+卸载仍只处理 Foundry 自己管理的内容，不删除无关项目配置。
+
 ---
 
-## 17. 开发 Foundry
+## 21. 开发 Foundry
 
-修改协作行为时先改 `runtime/`；如果预期路由变化，也同步更新 `evals/`。
+修改协作行为时先改 `runtime/`。如果 Runtime 语义版本或打包文件集合发生变化，也更新：
+
+```text
+runtime/manifest.json
+```
+
+如果预期路由变化，同步更新 `evals/`。
 
 ```bash
 python3 scripts/package_runtime.py
@@ -552,9 +768,20 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q .agents/skills/install-codex-agent-foundry/scripts scripts tests
 ```
 
+CI 覆盖：
+
+```text
+Python 3.10 + tomli
+Python 3.11
+Python 3.12
+Python 3.13
+```
+
+并额外测试 Python 3.10 **没有 tomli 时必须输出可操作错误**，而不是 traceback。
+
 ---
 
-## 18. 最后一张图
+## 22. 最后一张图
 
 ```text
 Root
@@ -571,8 +798,15 @@ Root
 多 substantial writers
 → 不共享 checkout
 → Git worktrees
+
+安装 / 升级
+→ PLAN 先显示 Runtime provenance + models
+→ Apply
+→ verify
+→ 可选 --runtime-check
+→ 新开 Codex session
 ```
 
-这就是 Foundry 当前最核心的设计取舍。
+这就是 Foundry 当前最核心的设计取舍和运行生命周期。
 
-官方参考：[Subagents](https://developers.openai.com/codex/subagents) · [Developer commands / review](https://developers.openai.com/codex/cli/slash-commands) · [Build skills](https://developers.openai.com/codex/skills)
+官方参考：[Subagents](https://developers.openai.com/codex/subagents) · [CLI reference](https://developers.openai.com/codex/cli/reference) · [Developer commands / review](https://developers.openai.com/codex/cli/slash-commands) · [Build skills](https://developers.openai.com/codex/skills)

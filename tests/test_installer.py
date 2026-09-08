@@ -20,6 +20,7 @@ assert spec.loader is not None
 sys.modules[spec.name] = mod
 spec.loader.exec_module(mod)
 
+
 class InstallerPlanTests(unittest.TestCase):
     def test_check_plan_includes_state_file(self):
         with tempfile.TemporaryDirectory() as td:
@@ -27,6 +28,35 @@ class InstallerPlanTests(unittest.TestCase):
             plan = mod.build_install_plan(root)
             paths = {s.path.relative_to(root).as_posix() for s in plan.steps}
             self.assertIn(".codex/.agent-foundry.json", paths)
+
+    def test_state_records_runtime_provenance(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            mod.apply_plan(mod.build_install_plan(root))
+            state = json.loads((root / ".codex/.agent-foundry.json").read_text())
+            self.assertEqual(state["runtime_version"], mod.bundled_runtime_version())
+            self.assertEqual(state["runtime_sha256"], mod.bundled_runtime_sha256())
+            self.assertRegex(state["runtime_sha256"], r"^[0-9a-f]{64}$")
+            self.assertTrue(state["source_revision"] is None or isinstance(state["source_revision"], str))
+
+    def test_legacy_state_is_enriched_on_next_install(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            mod.apply_plan(mod.build_install_plan(root))
+            state_path = root / ".codex/.agent-foundry.json"
+            state = json.loads(state_path.read_text())
+            for key in ("runtime_version", "runtime_sha256", "source_revision"):
+                del state[key]
+            state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+            plan = mod.build_install_plan(root)
+            state_steps = [s for s in plan.steps if s.path == state_path]
+            self.assertEqual(len(state_steps), 1)
+            self.assertEqual(state_steps[0].action, "update")
+            mod.apply_plan(plan)
+            upgraded = json.loads(state_path.read_text())
+            self.assertIn("runtime_version", upgraded)
+            self.assertIn("runtime_sha256", upgraded)
+            self.assertIn("source_revision", upgraded)
 
     def test_force_plan_includes_backup_path(self):
         with tempfile.TemporaryDirectory() as td:
@@ -95,11 +125,13 @@ class InstallerPlanTests(unittest.TestCase):
             plan = mod.build_install_plan(root)
             real_write = mod.atomic_write
             calls = {"n": 0}
+
             def flaky(path, content, mode=None):
                 calls["n"] += 1
                 if calls["n"] == 3:
                     raise OSError("synthetic failure")
                 return real_write(path, content, mode)
+
             with mock.patch.object(mod, "atomic_write", side_effect=flaky):
                 with self.assertRaises(mod.InstallError):
                     mod.apply_plan(plan)
@@ -203,9 +235,10 @@ class InstallerPlanTests(unittest.TestCase):
             mod.apply_plan(mod.build_uninstall_plan(root))
             self.assertIn("max_concurrent_threads_per_session = 7", cfg.read_text())
 
+
 class VerifyTests(unittest.TestCase):
-    def run_verify(self, root: Path):
-        return subprocess.run([sys.executable, str(VERIFY), str(root)], text=True, capture_output=True)
+    def run_verify(self, root: Path, *args):
+        return subprocess.run([sys.executable, str(VERIFY), str(root), *args], text=True, capture_output=True)
 
     def test_verify_accepts_model_override(self):
         with tempfile.TemporaryDirectory() as td:
@@ -213,6 +246,19 @@ class VerifyTests(unittest.TestCase):
             mod.apply_plan(mod.build_install_plan(root, explorer_model="gpt-explorer-x"))
             result = self.run_verify(root)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_verify_accepts_legacy_state_with_warning(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            mod.apply_plan(mod.build_install_plan(root))
+            state_path = root / ".codex/.agent-foundry.json"
+            state = json.loads(state_path.read_text())
+            for key in ("runtime_version", "runtime_sha256", "source_revision"):
+                del state[key]
+            state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+            result = self.run_verify(root)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("predates runtime provenance", result.stdout)
 
     def test_verify_rejects_symlinked_managed_directory(self):
         if os.name == "nt":
@@ -236,6 +282,7 @@ class VerifyTests(unittest.TestCase):
             result = self.run_verify(root)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("drifted", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
