@@ -13,7 +13,7 @@ Its core product is not the installer and not a large catalog of agent personas.
 - who is allowed to write in a checkout;
 - what evidence is required before a task is complete.
 
-The installer Skill, packaging, state tracking, conflict protection, verification, tests, and CI exist to distribute and maintain that policy safely.
+The installer Skill, packaging, migration logic, state tracking, conflict protection, verification, tests, and CI exist to distribute and maintain that policy safely.
 
 ## Design goal: the smallest useful agent system
 
@@ -27,9 +27,7 @@ More agents are not automatically better. Every persistent role adds:
 - more ownership and scheduling decisions;
 - a larger configuration surface that can drift from Codex itself.
 
-The baseline therefore keeps only roles that are frequent, narrow, reusable across repositories, and materially improved by an isolated context.
-
-The default shape is:
+The baseline therefore keeps only roles that are frequent, narrow, reusable, and materially improved by an isolated context.
 
 ```text
                          Root
@@ -39,9 +37,9 @@ The default shape is:
                          │
           ┌──────────────┴──────────────┐
           ▼                             ▼
-  repo_explorer                     reviewer
+      explorer                       reviewer
   Terra / medium                  GPT-5.6 / high
-      read-only                       read-only
+       no-edit                        no-edit
           │                             │
           └──────────────┬──────────────┘
                          ▼
@@ -49,218 +47,221 @@ The default shape is:
                  evidence + final call
 ```
 
-Only two custom specialists are persistent:
+Only two project-scoped specialist profiles are persistent:
 
-- **`repo_explorer`** — read-heavy investigation before or during implementation.
-- **`reviewer`** — independent cold review after a material implementation.
+- **`explorer`** — a Foundry project override of Codex's built-in `explorer`, specialized for read-heavy evidence gathering.
+- **`reviewer`** — an independent cold-review specialist after material implementation.
 
 Implementation, verification, and research remain on demand.
 
-## Why these roles — and why not the obvious alternatives?
+## Build on Codex primitives instead of inventing parallel vocabulary
 
-Codex already ships built-in subagents. Current Codex documentation lists:
+Codex already provides built-in subagents such as:
 
 - `default` — general-purpose fallback;
 - `worker` — implementation and fixes;
 - `explorer` — read-heavy codebase exploration.
 
-Foundry uses those capabilities rather than rebuilding every role as a custom profile.
+Codex also provides a native `/review` / `codex review` workflow.
+
+Foundry's rule is:
+
+> **Reuse Codex-native roles when the role concept already exists. Create or override a project agent only when a narrower stable contract is worth maintaining.**
+
+That is why Foundry now installs `.codex/agents/explorer.toml` instead of inventing a second active role called `repo_explorer`.
+
+Current Codex documentation states that a custom agent with the same name as a built-in role takes precedence. The project-scoped `explorer.toml` therefore overrides the built-in `explorer` while preserving the same orchestration vocabulary.
 
 ### Role decision table
 
 | Work | Foundry choice | Why |
 | --- | --- | --- |
-| Goal, decomposition, architecture, integration, final validation | **Root** | Root has the fullest task context and remains the single final decision owner. |
-| Codebase exploration | **Persistent `repo_explorer`** | Exploration is frequent, naturally read-only, highly parallelizable, and benefits from a fixed evidence-oriented contract. |
-| Implementation / fixes | **Root by default; built-in `worker` on demand** | Codex already provides a worker. A permanent custom implementer would mostly duplicate it while increasing write-ownership complexity. |
-| Independent review | **Persistent `reviewer`** | A fresh read-only context can challenge assumptions inherited by the writer and can be invoked inside the orchestration flow. |
-| Large/noisy test or log analysis | **Temporary verifier** | Verification varies heavily by project; a generic permanent tester profile adds little until a stable specialization exists. |
-| Planning / architecture | **Root** | Splitting high-level judgment across extra personas increases context-transfer cost and makes final responsibility less clear. |
-| Research | **Temporary research, unless a stable tool/domain specialization emerges** | Generic research is too broad; persistent specialists are more valuable when tied to a repeatable domain or tool surface. |
+| Goal, decomposition, architecture, integration, final validation | **Root** | Root has the fullest task context and remains the final decision owner. |
+| Codebase exploration | **Project override `explorer`** | Exploration is frequent, naturally no-write, highly parallelizable, and benefits from a stable evidence/cost contract. |
+| Implementation / fixes | **Root by default; built-in `worker` on demand** | Codex already has a worker. A generic custom implementer would mostly duplicate it while increasing write-ownership complexity. |
+| Independent review | **Persistent `reviewer`** | A fresh no-edit context can challenge assumptions inherited by the writer and can be invoked inside the orchestration flow. |
+| Large/noisy test or log analysis | **Temporary verifier** | Verification varies heavily by project; a generic permanent tester adds little until a stable specialization exists. |
+| Planning / architecture | **Root** | Extra planner/architect personas add handoffs and blur final responsibility. |
+| Research | **Temporary unless a stable domain/tool specialization emerges** | A generic researcher is too broad; a docs/MCP/domain specialist may be worth adding later. |
 
-### Why a custom `repo_explorer` when Codex already has built-in `explorer`?
+## Why override built-in `explorer`?
 
-This is intentional overlap.
+The built-in `explorer` already provides the correct high-level role name. Foundry does not need a parallel exploration vocabulary; it needs a **more deterministic project contract**.
 
-The built-in `explorer` is a useful general read-heavy agent. Foundry's `repo_explorer` narrows that role further by fixing a project-level contract:
+The installed profile pins:
 
-- read-only sandbox;
-- a selected model and reasoning effort;
+```toml
+name = "explorer"
+model = "gpt-5.6-terra"
+model_reasoning_effort = "medium"
+```
+
+and requires the agent to:
+
 - trace the real execution path with file/symbol evidence;
 - separate confirmed facts from hypotheses;
 - identify the smallest likely change boundary;
-- do not edit, refactor, or recursively delegate;
-- return findings, risks, evidence, and unknowns.
+- avoid edits and speculative refactors;
+- avoid recursively spawning subagents;
+- return findings, evidence, risks, and unknowns.
 
-That gives Foundry a stable baseline independent of changes to the generic built-in role. The cost is one extra custom profile that overlaps built-in functionality. If Codex's built-in explorer eventually matches the desired contract closely enough, removing this custom profile is a valid future simplification.
+This gives Foundry three useful properties:
 
-### Why a custom `reviewer` when Codex has `/review` / `codex review`?
+1. **Native routing vocabulary.** Root and Codex still say `explorer`, not `repo_explorer`.
+2. **Cost control.** Exploration is intentionally pinned to a cheaper/faster model profile than a potentially expensive root session.
+3. **Behavioral stability.** A no-edit, evidence-oriented contract is explicit in project instructions instead of being left entirely to a generic built-in default.
+
+Current Codex does **not** apply `sandbox_mode` from an agent role as a separate child filesystem sandbox. Role application pins supported fields such as model, reasoning effort, instructions, features, and skills, while spawned children inherit the live parent permission/sandbox profile. Explorer and Reviewer are therefore **behaviorally no-write**, not independently sandbox-enforced. If hard filesystem isolation is required, enforce it at the parent session/runtime level.
+
+### Requested model versus actual resolved child model
+
+The profile expresses the model and reasoning effort that Foundry requests. Current Codex documentation gives role-file model/effort settings high precedence, so this is the most precise project-level way to pin exploration cost without globally downgrading `worker` or every other subagent.
+
+However, Foundry deliberately distinguishes:
+
+```text
+configured/requested model
+≠
+proof of the model actually resolved by every installed Codex release
+```
+
+Subagent model-routing bugs have existed in some Codex releases and execution paths. `verify.py --runtime-check` therefore reports the selected profile values but does **not** claim that a spawned child thread was observed using them. A stronger guarantee should only be added when Codex exposes stable machine-readable spawned-thread model metadata.
+
+Foundry also keeps `medium` as the current Explorer baseline. Changing role identity and changing reasoning quality are separate decisions; a future `medium → low` change should be justified by evals rather than bundled into this migration.
+
+## Why keep a custom `reviewer` when Codex has `/review`?
 
 They overlap in purpose but serve different workflow boundaries.
 
-**`/review` / `codex review`** is a first-class Codex code-review workflow. It is a good choice when a person explicitly wants to review a working tree, branch, or commit.
+**`/review` / `codex review`** is a native code-review workflow. It is the natural choice when a person explicitly wants to review a working tree, branch, or commit.
 
-**Foundry `reviewer`** is a project-scoped subagent that the root can invoke *inside* a larger multi-agent task:
+**Foundry `reviewer`** is a project-scoped subagent that Root can invoke inside a larger task:
 
 ```text
-Explore
-   ↓
+explorer gathers evidence
+        ↓
 Root or Worker implements
-   ↓
-Foundry reviewer performs a cold read-only review
-   ↓
+        ↓
+reviewer performs a cold no-edit review
+        ↓
 Root reconciles findings, fixes if needed, validates
 ```
 
-The custom reviewer also has a fixed sandbox/model/instruction contract and is explicitly told not to fix its own findings. This makes it useful as an independent evidence producer during orchestration.
+The reviewer is instructed not to edit files and uses a strong/high-reasoning profile, focuses on material correctness/regression/security/state/test risks, does not fix its own findings, and returns evidence to Root.
 
-The trade-off is intentional duplication with Codex's dedicated review workflow. Foundry does not claim its reviewer replaces `/review`; explicit human-triggered review can and should still use the native review workflow when that is the better fit.
+Its value is not “another agent is smarter.” Its value is **context separation from the writer**.
 
-### Why no permanent `implementer`?
+## Why no permanent `implementer`?
 
-Codex already ships a built-in `worker` for implementation and fixes. More importantly, implementation is **write-heavy**.
-
-Read-only agents can usually run safely in parallel. Multiple writers in one checkout cannot.
+Codex already provides built-in `worker` for implementation and fixes. More importantly, implementation is **write-heavy**.
 
 Foundry therefore defaults to:
 
 ```text
-small / coupled implementation
+small / tightly coupled implementation
 → Root writes
 
 large but clearly bounded implementation
-→ built-in worker may own the write task
+→ built-in worker may own the write mission
 
 multiple substantial implementations in parallel
 → separate Git worktrees
 ```
 
-A worker receives a write task only when scope, ownership, intended behavior, constraints, acceptance criteria, and validation are explicit. While the worker owns that checkout, root does not edit it concurrently.
+A worker receives a write mission only when scope, ownership, intended behavior, constraints, acceptance criteria, and validation are explicit. While the worker owns a checkout, Root does not edit the same checkout concurrently.
 
-This sacrifices some maximum parallelism in exchange for simpler ownership and fewer stale-write conflicts.
+This sacrifices some maximum parallelism for simpler ownership and fewer stale-write conflicts.
 
-### Why no permanent `tester`?
+## Why no permanent `tester`?
 
-"Testing" is not one stable cross-repository job. Verification may mean:
+"Testing" is not one stable cross-repository job. Verification might mean unit tests, integration tests, compiler diagnostics, browser reproduction, CI log analysis, benchmarks, migration validation, or flaky-test triage.
 
-- a focused unit test;
-- a large test suite;
-- compiler diagnostics;
-- browser reproduction;
-- CI log analysis;
-- performance checks;
-- migration validation;
-- flaky-test triage.
+A generic permanent `tester` would often add little beyond “run tests and report results.” Foundry keeps ordinary critical validation with Root and delegates **large/noisy independent verification** to a temporary agent.
 
-A generic permanent tester would mostly say "run tests and report results". Foundry instead keeps ordinary critical validation with root and delegates **large/noisy independent verification** to a temporary agent.
+If a repository develops a stable specialized validation capability — for example a browser debugger with dedicated tooling — that can justify a real custom agent later.
 
-If a repository develops a stable specialized verification role — for example a browser debugger with dedicated browser tools — that may justify a real custom agent later.
+## Why no permanent planner or architect?
 
-### Why no permanent planner or architect?
+Root owns requirements, decomposition, architecture decisions, integration, final validation, and the final answer. Those decisions are tightly coupled to user intent and all evidence returned by subagents.
 
-Root already owns requirements, decomposition, architecture decisions, integration, and final validation. Those decisions are tightly coupled to the user's intent and to all evidence returned by subagents.
-
-Adding permanent `planner` and `architect` layers would create more handoffs:
+Adding permanent layers such as:
 
 ```text
 User → Root → Planner → Architect → Worker → Reviewer → Root
 ```
 
-Foundry prefers to keep high-level judgment in the context that already has the most information, and use subagents primarily for **isolated evidence-producing work**.
+creates more context transfers and makes responsibility less clear. Foundry keeps high-level judgment in the context that already has the most information and uses subagents mainly for **isolated evidence-producing work** or clearly bounded execution.
 
 ## The deeper rule: read concurrency is cheap, write concurrency is expensive
 
-This is one of Foundry's central design assumptions.
+Behaviorally no-write agents can independently gather evidence without intentionally mutating shared source state. They are easy to parallelize and easy for Root to reconcile. This is an orchestration assumption, not a separate per-role sandbox guarantee.
 
-Read-only work is easy to parallelize because agents can independently gather evidence without changing shared state. That is why exploration and review are good persistent specialists.
+Write-heavy agents add coordination costs:
 
-Write-heavy work carries additional coordination costs:
-
-- two agents can modify the same file or assumption;
-- one writer can act on stale code after another writer changes it;
+- two writers can modify the same file or assumption;
+- one writer can act on stale code after another changes it;
 - ownership becomes ambiguous;
-- integration cost can erase the latency benefit of parallelism.
+- merge/integration cost can erase the latency benefit of parallelism.
 
 Therefore:
 
 - one checkout has one source-code writer at a time;
 - read-only agents may run in parallel;
 - substantial parallel writes move to separate worktrees;
-- root remains the integration owner.
+- Root remains the integration owner.
 
 ## When should Foundry add another persistent agent?
 
-A role should **not** become permanent merely because it resembles a software-engineering job title.
+A role should not become permanent merely because it resembles a software-engineering job title.
 
 A new persistent agent should satisfy most of these conditions:
 
-1. **Frequent** — the mission recurs across many meaningful tasks.
+1. **Frequent** — the mission recurs across meaningful tasks.
 2. **Stable** — its boundaries can be described narrowly and consistently.
-3. **Cross-repository or intentionally project-specific** — the role has repeatable value, not a one-off need.
-4. **Isolation helps** — a separate context materially improves quality, focus, or noise control.
-5. **Stable configuration helps** — model, reasoning effort, sandbox, tools, MCP, or skills can be meaningfully pinned.
-6. **Ownership stays clear** — the role does not introduce unnecessary competing writers.
-7. **Built-ins are insufficient** — a built-in agent or temporary delegation cannot express the specialization cleanly enough.
-8. **Evals can describe the expected improvement** — the role's value can be checked instead of assumed.
+3. **Repeatable** — the role has durable value rather than one-off convenience.
+4. **Isolation helps** — a separate context materially improves focus, quality, or noise control.
+5. **Stable configuration helps** — model, reasoning effort, tools, MCP, skills, or other actually supported role settings are worth pinning.
+6. **Ownership stays clear** — it does not create unnecessary competing writers.
+7. **Built-ins/temporary delegation are insufficient** — a stable specialization adds something real.
+8. **Evals can describe the expected improvement** — value can be checked instead of assumed.
 
-Examples that *might* qualify later:
+Potential future examples include a browser debugger with dedicated browser tooling, a docs researcher bound to a stable docs MCP, or a repository-specific security/database specialist.
 
-- a browser debugger with dedicated browser tooling;
-- a documentation researcher bound to a project-specific docs MCP server;
-- a specialized security or database agent for repositories that repeatedly need that exact workflow.
+## Runtime policy
 
-Generic `architect`, `implementer`, `tester`, or `researcher` roles do not qualify by default.
+The canonical policy lives in [`runtime/AGENTS.fragment.md`](./runtime/AGENTS.fragment.md).
 
-## Trade-offs Foundry accepts
+Core rules:
 
-The baseline is intentionally opinionated and conservative.
+1. Root owns the goal, decomposition, architecture decisions, integration, final validation, and final answer.
+2. Root is the default source-code writer.
+3. One checkout has one writer at a time.
+4. Substantial parallel writes use different worktrees.
+5. Default to one-level fan-out/fan-in.
+6. Subagents do not recursively delegate unless Root explicitly authorizes it for a specific mission.
+7. Every delegated mission defines goal, scope/ownership, constraints, evidence/acceptance, expected return, and stop condition.
+8. Agent agreement is not evidence of correctness; completion returns to diffs, tests, builds, logs, source, and reproduction evidence.
 
-- **Minimality over maximum specialization.** Fewer permanent agents means less tuning for niche workflows.
-- **Stable custom explorer over zero duplication.** `repo_explorer` overlaps Codex's built-in explorer so Foundry can pin a narrower contract.
-- **Orchestrated reviewer plus native review workflow.** The custom reviewer overlaps `/review`, but supports autonomous in-flow cold review.
-- **Single-writer clarity over maximum write parallelism.** Worktrees add setup cost, but shared-checkout multi-writer races are worse.
-- **One-level fan-out over recursive flexibility.** Nested delegation is possible only when root explicitly authorizes it; the default keeps coordination legible.
-- **Root judgment over role theater.** Planning and architecture stay with root even though separate personas may look more "agentic".
-
-These are baseline choices, not universal truths. Repositories can override them when their workload provides evidence for a better structure.
-
-## Example routing decisions
-
-`evals/scenarios.json` encodes the intended baseline:
+`evals/scenarios.json` encodes directional contracts such as:
 
 ```text
 tiny local change
 → Root only
 
 unclear cross-module regression
-→ repo_explorer → Root implementation → reviewer
+→ explorer → Root implementation → reviewer
 
-mechanical bounded implementation
-→ built-in worker may implement → reviewer → Root validates
+bounded mechanical implementation
+→ worker may implement → reviewer → Root validates
 
 large/noisy verification
-→ temporary verifier → Root interprets evidence
+→ temporary verifier
 
-two substantial independent writes
-→ separate worktrees, not parallel writers in one checkout
+parallel substantial writes
+→ separate worktrees
 ```
 
-These scenarios are deliberately small. They are contracts for the direction of the policy, not a claim that orchestration can be reduced to a fixed decision tree.
-
-## Core orchestration rules
-
-1. **Root keeps final responsibility.** It owns the goal, decomposition, integration, final validation, and final answer.
-2. **Root is the default writer.** Delegated writes are optional, not the normal path.
-3. **One source-code writer per checkout at a time.** If a worker owns a write task, root should not edit the same checkout concurrently.
-4. **Use worktrees for substantial parallel writes.** Parallel read-only work is fine in one checkout; substantial parallel writes should be isolated.
-5. **Default to one-level fan-out/fan-in.** Subagents do not recursively delegate unless root explicitly authorizes nested delegation for a specific mission.
-6. **Delegate only when it buys something.** Prefer read-heavy, noisy, independently verifiable, or latency-sensitive work.
-7. **Give every delegated task a mission contract.** At minimum: goal, scope/ownership, known facts/constraints, acceptance evidence, expected return, and stop condition.
-8. **Agent agreement is not correctness evidence.** Final judgment returns to diffs, tests, builds, logs, source, reproduction steps, and other concrete evidence.
-
-The canonical runtime policy lives in [`runtime/AGENTS.fragment.md`](./runtime/AGENTS.fragment.md). The longer rationale is in [the design reference](./.agents/skills/install-codex-agent-foundry/references/design.md).
-
-## Repository map
+## Repository layout
 
 ```text
 .
@@ -269,7 +270,7 @@ The canonical runtime policy lives in [`runtime/AGENTS.fragment.md`](./runtime/A
 │   └── .codex/
 │       ├── config.toml
 │       └── agents/
-│           ├── repo_explorer.toml
+│           ├── explorer.toml      # overrides Codex built-in explorer
 │           └── reviewer.toml
 ├── evals/                         # orchestration contract scenarios
 ├── .agents/skills/
@@ -295,124 +296,68 @@ There are intentionally two identical runtime trees:
 ```text
 runtime/                                      # edit this
         │
-        │  scripts/package_runtime.py
+        │ scripts/package_runtime.py
         ▼
 .agents/skills/install-codex-agent-foundry/
 └── assets/project/                           # generated distribution copy
 ```
 
-`runtime/` is the **only source of truth**. The Skill carries `assets/project/` so it remains self-contained when installed outside this repository.
+`runtime/` is the only source of truth. Do not hand-edit `assets/project/`.
 
-Do not hand-edit `assets/project/`. After changing `runtime/`, run:
+After runtime changes:
 
 ```bash
 python3 scripts/package_runtime.py
 python3 scripts/package_runtime.py --check
 ```
 
-CI fails if the generated package drifts from `runtime/`.
+CI fails on packaging drift or a stale packaged legacy `repo_explorer.toml`.
 
 ## Requirements
 
-The installer and verifier require **Python 3.11 or newer** because they use the standard-library `tomllib` parser.
+Installer and verifier require **Python 3.11+** because they use standard-library `tomllib`.
 
-Ubuntu 22.04 commonly ships Python 3.10 by default. On that platform, invoke an explicit Python 3.11+ interpreter instead of relying on `python3` if it still resolves to 3.10.
+Ubuntu 22.04 commonly ships Python 3.10. Both entry scripts check the Python version before importing `tomllib`, so old interpreters get a clear error rather than `ModuleNotFoundError`.
 
-Both entry scripts check the Python version **before** importing `tomllib`, so older interpreters produce a clear error instead of `ModuleNotFoundError`.
+## Install / update
 
-## Install into a repository
-
-From a clone of Foundry:
+Preview first:
 
 ```bash
-# Preview the complete plan. Selected models and reasoning effort are shown here.
 python3 .agents/skills/install-codex-agent-foundry/scripts/install.py /path/to/repo --check
-
-# Apply the same plan.
-python3 .agents/skills/install-codex-agent-foundry/scripts/install.py /path/to/repo
-
-# Verify files, state, TOML, profiles, and drift.
-python3 .agents/skills/install-codex-agent-foundry/scripts/verify.py /path/to/repo
 ```
 
-After a successful install, start a **new Codex session in the target project** so project-level `AGENTS.md` and `.codex/agents/` are loaded from a fresh session.
-
-After installation, the target repository contains roughly:
-
-```text
-your-project/
-├── AGENTS.md                  # existing content + Foundry managed block
-└── .codex/
-    ├── config.toml
-    ├── .agent-foundry.json    # ownership, runtime provenance, model state
-    └── agents/
-        ├── repo_explorer.toml
-        └── reviewer.toml
-```
-
-The installer follows **plan → apply**. `--check` builds the same complete plan a successful apply would execute. Conflicts block the whole apply before any write; mid-apply failures roll back changed paths.
-
-Idempotent output uses current-state wording, for example:
-
-```text
-unchanged AGENTS.md: managed block already current
-```
-
-### Selected models in dry-run output
-
-The plan prints the effective role selections before any write, for example:
+The plan shows the effective role selections before writing:
 
 ```text
 Selected agents:
-- repo_explorer: gpt-5.6-terra / medium
+- explorer: gpt-5.6-terra / medium
 - reviewer: gpt-5.6 / high
 ```
 
-This lets you notice a model mismatch before applying the configuration. It does **not** prove that your account can use those models.
-
-### Optional runtime check
-
-Normal `verify.py` is deterministic and local: it verifies structure, state, TOML syntax, profile content, and drift.
-
-For an additional environment check:
+Apply and verify:
 
 ```bash
-python3 .agents/skills/install-codex-agent-foundry/scripts/verify.py \
-  /path/to/repo \
-  --runtime-check
+python3 .agents/skills/install-codex-agent-foundry/scripts/install.py /path/to/repo
+python3 .agents/skills/install-codex-agent-foundry/scripts/verify.py /path/to/repo
 ```
 
-The optional runtime check additionally:
+After a successful install, start a **new Codex session in the target repository** so project-level `AGENTS.md` and `.codex/agents/` are loaded from a fresh session.
 
-- verifies `codex` is available on `PATH`;
-- runs `codex --version` in the target repository;
-- reports that strict TOML parsing passed for the project config and Foundry profiles;
-- prints the selected Explorer/Reviewer model and reasoning effort;
-- explicitly reports that **account-level model availability is not verified**.
+A new install contains roughly:
 
-Foundry does not currently claim a stronger Codex schema/session validation than this because it does not depend on an undocumented or unstable non-interactive config-validation command.
-
-### Installation provenance
-
-`.codex/.agent-foundry.json` records:
-
-```json
-{
-  "runtime_version": "1",
-  "source_revision": "<git-commit-or-unknown>",
-  "runtime_sha256": "<deterministic-runtime-content-hash>"
-}
+```text
+your-project/
+├── AGENTS.md
+└── .codex/
+    ├── config.toml
+    ├── .agent-foundry.json
+    └── agents/
+        ├── explorer.toml
+        └── reviewer.toml
 ```
 
-`source_revision` is best-effort. It is a Git commit when the installer runs from a Git checkout, and may be `unknown` when the Skill was distributed without `.git` metadata.
-
-`runtime_sha256` is the authoritative content fingerprint in that case: it hashes the packaged runtime files deterministically and is useful for upgrades, audits, and reproducing an installation.
-
-Existing pre-provenance state remains readable by the installer so it can be upgraded. The verifier asks you to rerun the installer when provenance fields are missing.
-
-### Optional model overrides
-
-Defaults come from the packaged Runtime profiles:
+### Model overrides
 
 ```bash
 python3 .../install.py /path/to/repo \
@@ -420,20 +365,95 @@ python3 .../install.py /path/to/repo \
   --reviewer-model <model>
 ```
 
-Selections are stored in `.codex/.agent-foundry.json` and verification treats them as intentional configuration.
+Overrides are stored in Foundry state and survive future updates unless explicitly changed.
 
-### Uninstall
+### v1 migration: `repo_explorer` → `explorer`
+
+Foundry v1 installed:
+
+```text
+.codex/agents/repo_explorer.toml
+```
+
+Current Foundry migrates that profile to:
+
+```text
+.codex/agents/explorer.toml
+```
+
+The migration is ownership-safe:
+
+- the v1 Explorer model override is preserved;
+- the legacy profile is deleted only if it is still Foundry-managed and exactly matches the expected v1 content for the recorded model;
+- a drifted or no-longer-managed legacy profile blocks the whole plan;
+- an existing foreign `explorer.toml` blocks the whole plan;
+- `--force` may back up and replace a foreign `explorer.toml` only when explicitly authorized;
+- an orphan Foundry-managed `repo_explorer.toml` without matching v1 state blocks for manual inspection, while a foreign file using that old name is left alone;
+- v1 uninstall remains supported using frozen v1 profile fixtures carried by the Installer Skill.
+
+Preview the migration with the same normal dry-run command. A blocked migration writes nothing.
+
+State schema/runtime version is now v2:
+
+```json
+{
+  "version": 2,
+  "runtime_version": "2",
+  "managed_agents": ["explorer.toml", "reviewer.toml"],
+  "models": {
+    "explorer": "gpt-5.6-terra",
+    "reviewer": "gpt-5.6"
+  },
+  "source_revision": "...",
+  "runtime_sha256": "..."
+}
+```
+
+`source_revision` is conservative: it is recorded only when the installer can prove it is running from a clean Foundry checkout whose `runtime/` matches the packaged assets. A Skill copied into an unrelated target Git repository therefore records `unknown`, never the target project's commit. `runtime_sha256` is the deterministic content fingerprint and remains authoritative when Git provenance cannot be proven.
+
+## Verification
+
+Normal verification is deterministic and local:
+
+```bash
+python3 .../verify.py /path/to/repo
+```
+
+It checks managed paths, state schema, managed `AGENTS.md` block, TOML parsing, expected profiles/model overrides, and drift.
+
+For an additional environment check:
+
+```bash
+python3 .../verify.py /path/to/repo --runtime-check
+```
+
+This additionally checks:
+
+- `codex` is on `PATH`;
+- `codex --version` succeeds in the target repository;
+- strict local TOML/profile parsing passed;
+- selected Explorer/Reviewer model and reasoning effort.
+
+It explicitly **does not** claim:
+
+- account-level model availability;
+- that a new Codex session loaded the files successfully;
+- that an actually spawned Explorer child resolved to the requested model/effort.
+
+Those require observable runtime/session metadata from Codex rather than static configuration alone.
+
+## Uninstall
 
 ```bash
 python3 .../install.py /path/to/repo --uninstall --check
 python3 .../install.py /path/to/repo --uninstall
 ```
 
-Uninstall removes only Foundry-owned state and preserves unrelated project configuration.
+Uninstall removes only Foundry-owned state and profiles, preserves unrelated project configuration, and refuses to delete a managed profile that has drifted.
 
 ## Development and validation
 
-When changing orchestration behavior, edit `runtime/` first, update `evals/` when the expected routing contract changes, then run:
+When changing orchestration behavior, edit `runtime/` first. When role routing changes, update `evals/` too.
 
 ```bash
 python3 scripts/package_runtime.py
@@ -442,16 +462,17 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q .agents/skills/install-codex-agent-foundry/scripts scripts tests
 ```
 
-CI runs the full suite on Python 3.11, 3.12, and 3.13, plus a Python 3.10 smoke job that verifies both entry scripts fail with the documented Python 3.11+ message rather than a traceback.
+CI runs the full suite on Python 3.11, 3.12, and 3.13, plus a Python 3.10 smoke job that verifies the clear version guard.
 
 ## Current Codex assumptions
 
-- Codex currently ships built-in `default`, `worker`, and `explorer` subagents.
-- Project custom agents are discovered from `.codex/agents/`.
-- `/review` and `codex review` provide a native code-review workflow distinct from a spawned custom reviewer.
-- Repository Skills are discovered from `.agents/skills/`.
-- `repo_explorer` currently defaults to `gpt-5.6-terra` / `medium`.
-- `reviewer` currently defaults to `gpt-5.6` / `high`.
-- Model availability may differ by account/client, so explicit model overrides are supported.
+- Project role files can lock role-level model and reasoning effort; current Codex exposes these as settings that cannot be changed for that role.
+- Spawned role permissions/sandboxing are inherited from the live parent session; Foundry's no-write specialists are behavioral contracts, not separate sandbox profiles.
+- built-in subagents include `default`, `worker`, and `explorer`;
+- project custom agents are discovered from `.codex/agents/`;
+- a custom agent with the same name as a built-in role takes precedence;
+- agent profile `model` and `model_reasoning_effort` can pin role-level selection;
+- `/review` / `codex review` is a native review workflow distinct from a spawned custom reviewer;
+- model availability and model-routing behavior can vary by account/client/release.
 
 Official references: [Subagents](https://developers.openai.com/codex/subagents) · [Developer commands / code review](https://developers.openai.com/codex/cli/slash-commands) · [Build skills](https://developers.openai.com/codex/skills)

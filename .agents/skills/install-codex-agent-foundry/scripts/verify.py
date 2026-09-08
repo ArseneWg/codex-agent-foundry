@@ -12,6 +12,7 @@ if sys.version_info < (3, 11):
     raise SystemExit(2)
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
@@ -19,12 +20,20 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-VERSION = 1
+VERSION = 2
+LEGACY_VERSION = 1
+RUNTIME_VERSION = "2"
 START = "<!-- codex-agent-foundry:start -->"
 END = "<!-- codex-agent-foundry:end -->"
 MANAGED = "# managed-by: codex-agent-foundry"
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 ASSET_ROOT = SKILL_ROOT / "assets" / "project"
+RUNTIME_FILES = (
+    "AGENTS.fragment.md",
+    ".codex/config.toml",
+    ".codex/agents/explorer.toml",
+    ".codex/agents/reviewer.toml",
+)
 
 
 def read_text(path: Path) -> str:
@@ -47,6 +56,17 @@ def checked_read_text(path: Path, errors: list[str], label: str) -> str:
         return ""
 
 
+def runtime_sha256() -> str:
+    digest = hashlib.sha256()
+    for rel in sorted(RUNTIME_FILES):
+        data = (ASSET_ROOT / rel).read_bytes()
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(data)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def managed_path_errors(target: Path) -> list[str]:
     errors: list[str] = []
     directory_paths = {".codex", ".codex/agents"}
@@ -56,8 +76,6 @@ def managed_path_errors(target: Path) -> list[str]:
         "AGENTS.md",
         ".codex/config.toml",
         ".codex/.agent-foundry.json",
-        ".codex/agents/repo_explorer.toml",
-        ".codex/agents/reviewer.toml",
     ):
         path = target / rel
         if path.is_symlink():
@@ -96,19 +114,25 @@ def set_profile_model(content: str, model: str) -> str:
     return new
 
 
-def load_state(target: Path, errors: list[str]) -> dict[str, object] | None:
+def load_state(target: Path, errors: list[str]) -> tuple[dict[str, object] | None, bool]:
     state = target / ".codex" / ".agent-foundry.json"
     if not state.exists():
         errors.append(".codex/.agent-foundry.json is missing")
-        return None
+        return None, False
     try:
         payload = json.loads(read_text(state))
     except Exception as exc:
         errors.append(f"Foundry state file is invalid: {exc}")
-        return None
+        return None, False
     if not isinstance(payload, dict):
         errors.append("Foundry state file must contain a JSON object")
-        return None
+        return None, False
+
+    version = payload.get("version")
+    if not isinstance(version, int) or isinstance(version, bool) or version not in {LEGACY_VERSION, VERSION}:
+        errors.append(f"installed Foundry state version {version!r} is unsupported; expected {LEGACY_VERSION} or {VERSION}")
+        return payload, False
+    legacy = version == LEGACY_VERSION
 
     required = {
         "version",
@@ -117,19 +141,19 @@ def load_state(target: Path, errors: list[str]) -> dict[str, object] | None:
         "concurrency_added",
         "config_created",
         "models",
-        "runtime_version",
-        "source_revision",
-        "runtime_sha256",
     }
+    if not legacy:
+        required |= {"runtime_version", "source_revision", "runtime_sha256"}
     missing = sorted(required - payload.keys())
     if missing:
-        errors.append(
-            "Foundry state is missing provenance fields; rerun the installer to refresh metadata: "
-            + ", ".join(missing)
-        )
-    if payload.get("version") != VERSION:
-        errors.append(f"installed Foundry version is not {VERSION}")
-    if payload.get("managed_agents") != ["repo_explorer.toml", "reviewer.toml"]:
+        if legacy:
+            errors.append("legacy Foundry state is incomplete: " + ", ".join(missing))
+        else:
+            errors.append("Foundry state is missing provenance fields; rerun the installer to refresh metadata: " + ", ".join(missing))
+
+    expected_agents = ["repo_explorer.toml", "reviewer.toml"] if legacy else ["explorer.toml", "reviewer.toml"]
+    expected_model_keys = {"repo_explorer", "reviewer"} if legacy else {"explorer", "reviewer"}
+    if payload.get("managed_agents") != expected_agents:
         errors.append("Foundry state has unexpected managed_agents")
     if payload.get("agents_md_markers") != [START, END]:
         errors.append("Foundry state has unexpected AGENTS.md markers")
@@ -140,17 +164,28 @@ def load_state(target: Path, errors: list[str]) -> dict[str, object] | None:
     if not isinstance(models, dict):
         errors.append("Foundry state has invalid models")
     else:
-        if set(models) != {"repo_explorer", "reviewer"}:
+        if set(models) != expected_model_keys:
             errors.append("Foundry state models has unexpected role keys")
         if not all(isinstance(v, str) and v.strip() for v in models.values()):
             errors.append("Foundry state model values must be non-empty strings")
-    if "runtime_version" in payload and (not isinstance(payload["runtime_version"], str) or not payload["runtime_version"]):
-        errors.append("Foundry state runtime_version must be a non-empty string")
+    if "runtime_version" in payload:
+        expected_runtime_version = str(version)
+        if payload.get("runtime_version") != expected_runtime_version:
+            errors.append(f"Foundry state runtime_version must be {expected_runtime_version!r} for state version {version}")
     if "source_revision" in payload and (not isinstance(payload["source_revision"], str) or not payload["source_revision"]):
         errors.append("Foundry state source_revision must be a non-empty string")
-    if "runtime_sha256" in payload and not re.fullmatch(r"[0-9a-f]{64}", str(payload["runtime_sha256"])):
+    runtime_hash = payload.get("runtime_sha256")
+    if "runtime_sha256" in payload and not re.fullmatch(r"[0-9a-f]{64}", str(runtime_hash)):
         errors.append("Foundry state runtime_sha256 must be a 64-character lowercase hex digest")
-    return payload
+    elif not legacy and isinstance(runtime_hash, str):
+        try:
+            expected_hash = runtime_sha256()
+        except OSError as exc:
+            errors.append(f"bundled runtime fingerprint cannot be computed: {exc}")
+        else:
+            if runtime_hash != expected_hash:
+                errors.append("Foundry state runtime_sha256 does not match the bundled runtime; rerun the installer")
+    return payload, legacy
 
 
 def profile_runtime_info(target: Path, state: dict[str, object] | None, errors: list[str]) -> dict[str, tuple[str, str]]:
@@ -158,20 +193,27 @@ def profile_runtime_info(target: Path, state: dict[str, object] | None, errors: 
     models = state.get("models", {}) if isinstance(state, dict) else {}
     if not isinstance(models, dict):
         models = {}
-    keys = {"repo_explorer.toml": "repo_explorer", "reviewer.toml": "reviewer"}
-    for name in ("repo_explorer.toml", "reviewer.toml"):
+    keys = {"explorer.toml": "explorer", "reviewer.toml": "reviewer"}
+    for name in ("explorer.toml", "reviewer.toml"):
         path = target / ".codex" / "agents" / name
-        actual = checked_read_text(path, errors, str(path.relative_to(target)))
+        label = str(path.relative_to(target))
+        if path.is_symlink():
+            errors.append(f"{label} is a symlink; Foundry-managed profiles must be regular files")
+            continue
+        if path.exists() and not path.is_file():
+            errors.append(f"{label} must be a regular file")
+            continue
+        actual = checked_read_text(path, errors, label)
         if not actual:
-            errors.append(f"{path.relative_to(target)} is missing")
+            errors.append(f"{label} is missing")
             continue
         if not is_foundry_managed(actual):
-            errors.append(f"{path.relative_to(target)} is not marked as Foundry-managed")
+            errors.append(f"{label} is not marked as Foundry-managed")
             continue
         try:
             actual_parsed = tomllib.loads(actual)
         except Exception as exc:
-            errors.append(f"{path.relative_to(target)} is invalid TOML: {exc}")
+            errors.append(f"{label} is invalid TOML: {exc}")
             continue
         bundled = read_text(ASSET_ROOT / ".codex" / "agents" / name)
         try:
@@ -185,12 +227,21 @@ def profile_runtime_info(target: Path, state: dict[str, object] | None, errors: 
             errors.append(f"bundled {name} template is invalid: {exc}")
             continue
         if actual != expected:
-            errors.append(f"{path.relative_to(target)} has drifted from the expected Foundry profile")
+            errors.append(f"{label} has drifted from the expected Foundry profile")
         effort = actual_parsed.get("model_reasoning_effort")
         if not isinstance(effort, str) or not effort.strip():
-            errors.append(f"{path.relative_to(target)} has invalid model_reasoning_effort")
+            errors.append(f"{label} has invalid model_reasoning_effort")
         else:
             result[keys[name]] = (model, effort)
+
+    legacy = target / ".codex" / "agents" / "repo_explorer.toml"
+    if not legacy.is_symlink() and legacy.is_file():
+        try:
+            legacy_content = legacy.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            legacy_content = ""
+        if is_foundry_managed(legacy_content):
+            errors.append("orphan Foundry-managed .codex/agents/repo_explorer.toml is still present; inspect it before removing or migrating it")
     return result
 
 
@@ -219,11 +270,12 @@ def run_runtime_check(target: Path, role_info: dict[str, tuple[str, str]], error
     version = (proc.stdout or proc.stderr).strip()
     notes.append(f"codex: {version or 'version command succeeded'}")
     notes.append("strict TOML parsing: passed for project config and Foundry agent profiles")
-    for role in ("repo_explorer", "reviewer"):
+    for role in ("explorer", "reviewer"):
         if role in role_info:
             model, effort = role_info[role]
             notes.append(f"{role}: {model} / {effort}")
     notes.append("account model availability: not verified; start a new Codex session to confirm the selected models can be used")
+    notes.append("resolved child model/effort: not verified unless the installed Codex exposes observable spawned-thread metadata")
     notes.append("Codex schema/session loading: not claimed beyond CLI presence/version and strict local TOML/profile validation")
     return notes
 
@@ -246,7 +298,16 @@ def main() -> int:
             print(f"- {error}")
         return 1
 
-    state = load_state(target, errors)
+    state, legacy = load_state(target, errors)
+    if legacy and not errors:
+        errors.append(
+            "legacy Foundry v1 explorer role detected (repo_explorer); rerun the current installer to migrate it to the Codex-native explorer role"
+        )
+    if errors:
+        print("Foundry verification failed:")
+        for error in errors:
+            print(f"- {error}")
+        return 1
 
     agents_md = target / "AGENTS.md"
     agents_text = checked_read_text(agents_md, errors, "AGENTS.md")

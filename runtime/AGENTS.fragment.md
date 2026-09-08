@@ -6,8 +6,10 @@ Delegate only when parallelism or context isolation has a material benefit that 
 
 ### Persistent specialist profiles
 
-- Use `repo_explorer` for read-only codebase investigation when behavior, ownership, dependencies, tests, or call paths are unclear.
+- Use `explorer` for no-write codebase investigation when behavior, ownership, dependencies, tests, or call paths are unclear. This project-scoped profile intentionally overrides Codex's built-in `explorer` so Foundry can pin a no-write evidence contract plus model/reasoning defaults.
 - Use `reviewer` after a material implementation for an independent cold review of correctness, regressions, security, concurrency/state risks, and meaningful test gaps.
+
+Explorer and reviewer are behaviorally no-write: they must not edit files. Current Codex spawned roles inherit the live parent session permission/sandbox profile, so this collaboration rule is not an independent per-role sandbox boundary.
 
 ### On-demand delegation
 
@@ -17,7 +19,7 @@ Delegate only when parallelism or context isolation has a material benefit that 
 
 ### Write ownership and spawn discipline
 
-Keep one source-code writer per checkout at a time. Read-only agents may run in parallel. For substantial parallel implementation, use separate Git worktrees or independent worktree chats.
+Keep one source-code writer per checkout at a time. Behaviorally no-write agents may run in parallel. For substantial parallel implementation, use separate Git worktrees or independent worktree chats.
 
 Default to one-level fan-out from the root and fan-in back to the root. Spawn the minimum number of agents that can produce meaningfully independent evidence or latency savings.
 

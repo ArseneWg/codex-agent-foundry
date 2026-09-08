@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / ".agents/skills/install-codex-agent-foundry"
@@ -20,15 +21,35 @@ spec.loader.exec_module(mod)
 
 
 class RuntimeExperienceTests(unittest.TestCase):
-    def test_state_records_runtime_provenance(self):
+    def test_state_records_runtime_provenance_and_native_explorer(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             mod.apply_plan(mod.build_install_plan(root))
             state = json.loads((root / ".codex/.agent-foundry.json").read_text())
-            self.assertEqual(state["runtime_version"], mod.RUNTIME_VERSION)
+            self.assertEqual(state["version"], 2)
+            self.assertEqual(state["runtime_version"], "2")
+            self.assertEqual(state["managed_agents"], ["explorer.toml", "reviewer.toml"])
+            self.assertEqual(set(state["models"]), {"explorer", "reviewer"})
             self.assertEqual(state["runtime_sha256"], mod.runtime_sha256())
             self.assertRegex(state["runtime_sha256"], r"^[0-9a-f]{64}$")
             self.assertTrue(state["source_revision"])
+
+    def test_source_revision_is_unknown_for_a_copied_skill_inside_an_unrelated_repo(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fake_skill = root / ".agents/skills/install-codex-agent-foundry"
+            fake_skill.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.email", "test@example.com"], check=True)
+            subprocess.run(["git", "-C", str(root), "config", "user.name", "Test"], check=True)
+            (root / "README.md").write_text("target repo\n")
+            subprocess.run(["git", "-C", str(root), "add", "README.md"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-q", "-m", "target commit"], check=True)
+            target_revision = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            with mock.patch.object(mod, "SKILL_ROOT", fake_skill):
+                revision = mod.source_revision()
+            self.assertEqual(revision, "unknown")
+            self.assertNotEqual(revision, target_revision)
 
     def test_idempotent_plan_uses_current_wording(self):
         with tempfile.TemporaryDirectory() as td:
@@ -49,7 +70,8 @@ class RuntimeExperienceTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("Selected agents:", result.stdout)
-            self.assertIn("repo_explorer: gpt-5.6-terra / medium", result.stdout)
+            self.assertIn("explorer: gpt-5.6-terra / medium", result.stdout)
+            self.assertNotIn("repo_explorer:", result.stdout)
             self.assertIn("reviewer: gpt-5.6 / high", result.stdout)
 
     def test_apply_prints_new_session_hint(self):
@@ -63,7 +85,7 @@ class RuntimeExperienceTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("Start a new Codex session in this project to load Foundry.", result.stdout)
 
-    def test_runtime_check_reports_cli_and_model_limit(self):
+    def test_runtime_check_reports_native_explorer_and_model_limit(self):
         if os.name == "nt":
             self.skipTest("POSIX executable fixture")
         with tempfile.TemporaryDirectory() as td:
@@ -85,9 +107,10 @@ class RuntimeExperienceTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("codex-cli 9.9.9-test", result.stdout)
-            self.assertIn("repo_explorer: gpt-5.6-terra / medium", result.stdout)
+            self.assertIn("explorer: gpt-5.6-terra / medium", result.stdout)
             self.assertIn("reviewer: gpt-5.6 / high", result.stdout)
             self.assertIn("account model availability: not verified", result.stdout)
+            self.assertIn("resolved child model/effort: not verified", result.stdout)
 
     def test_python_guard_precedes_tomllib_import(self):
         for path in (INSTALL, VERIFY):
