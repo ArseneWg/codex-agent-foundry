@@ -18,12 +18,13 @@ Root remains the owner of user intent, requirements, decomposition, architecture
 
 Foundry prefers Codex's own role vocabulary when the concept already exists.
 
-Current baseline:
+Current workload-aware baseline:
 
 - `explorer`: project-scoped override of Codex's built-in `explorer`;
+- `verifier`: Foundry low-cost execution specialist for bounded noisy/repetitive verification;
 - `reviewer`: Foundry custom cold-review specialist;
 - built-in `worker`: on-demand implementation when the write mission is bounded;
-- temporary verifier/research: on demand.
+- narrow research: on demand.
 
 This replaces the v1 design where Foundry introduced a parallel role named `repo_explorer` next to Codex's built-in `explorer`.
 
@@ -55,7 +56,7 @@ The benefit is native routing vocabulary plus deterministic project policy. The 
 
 Current Codex role application does not apply `sandbox_mode` as a separate role-level filesystem sandbox. The role layer applies bounded fields such as model, reasoning effort, developer instructions, features, and skills; spawn runtime overrides then copy the live parent permission profile into the child.
 
-Therefore Explorer and Reviewer are **behaviorally no-write**: their policy and developer instructions prohibit edits, but they do not receive an independently enforced read-only filesystem merely from the role TOML. Hard isolation belongs at the parent session/runtime permission layer. This distinction is part of Foundry's safety model.
+Therefore Explorer, Verifier, and Reviewer are **behaviorally no-write**: their policy and developer instructions prohibit edits, but they do not receive an independently enforced read-only filesystem merely from the role TOML. Hard isolation belongs at the parent session/runtime permission layer. This distinction is part of Foundry's safety model.
 
 Relevant Codex sources: [`agent/role.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/agent/role.rs) and [`multi_agents_common.rs`](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/handlers/multi_agents_common.rs).
 
@@ -65,14 +66,17 @@ Exploration often consists of locating symbols, tracing call paths, identifying 
 
 Pinning only `explorer` avoids using `[agents].default_subagent_model` to downgrade unrelated subagents such as `worker`.
 
-Current baseline remains:
+Current workload-aware baseline:
 
 ```text
 Root       → user/current session model
 explorer   → gpt-5.6-terra / medium
+verifier   → gpt-5.6-luna / low
 reviewer   → gpt-5.6 / high
 worker     → Codex built-in / mission-dependent
 ```
+
+Verifier is pinned independently instead of using `[agents].default_subagent_model`, because a global low-cost default could unintentionally downgrade `worker` or future unpinned roles. Some Codex releases have had child-model availability/routing differences; `--verifier-model gpt-5.6-terra` is the compatibility fallback when Luna cannot be spawned.
 
 Role migration and reasoning-quality tuning are intentionally separate changes. `medium → low` should be evaluated independently rather than coupled to the role rename.
 
@@ -116,11 +120,13 @@ Foundry defaults to:
 
 A worker mission must define scope, ownership, intended behavior, constraints, acceptance criteria, expected validation, and stop condition. Root must not edit the same checkout while a worker owns it.
 
-## Why no permanent Tester
+## Why Verifier is now persistent
 
-Verification is not a stable universal role. Different repositories need different test runners, browsers, compilers, migrations, benchmarks, CI/log analysis, or flaky-test workflows.
+The original baseline kept verification temporary because repositories use different test runners, browsers, compilers, devices, migrations, and CI systems. Workload telemetry changed the admission decision: the stable part is not the test framework, but the execution contract itself.
 
-Ordinary critical checks stay with Root. Large/noisy independent verification can be delegated temporarily. A permanent validation agent should appear only when a stable specialization/tool surface exists.
+Across the observed workload, long sessions were dominated by shell/read/wait loops, repeated build/check and device polling, and large command output, while tests themselves were a small share of calls. A persistent Verifier therefore owns a narrow cross-stack contract: execute an exact validation scope, aggregate mechanical polling, retain large logs outside model context, return bounded evidence, never edit/fix, and stop when diagnosis is required.
+
+A single short deterministic command still stays with Root. Spawning a cheap agent is not free; Verifier exists for isolation/noise/latency benefits, not as a blanket wrapper around every shell command.
 
 ## Why planning and architecture stay with Root
 
@@ -222,22 +228,27 @@ and state similar to:
 
 ### v2
 
-Current Foundry installs:
+Foundry v2 installs `explorer.toml` + `reviewer.toml` and records state/runtime version 2. Exact v2 profile fixtures are frozen under `assets/legacy/v2/`.
+
+### v3
+
+The workload-aware candidate adds:
 
 ```text
-.codex/agents/explorer.toml
+.codex/agents/verifier.toml
 ```
 
-with state:
+and records:
 
 ```json
 {
-  "version": 2,
-  "runtime_version": "2",
-  "managed_agents": ["explorer.toml", "reviewer.toml"],
+  "version": 3,
+  "runtime_version": "3",
+  "managed_agents": ["explorer.toml", "reviewer.toml", "verifier.toml"],
   "models": {
     "explorer": "...",
-    "reviewer": "..."
+    "reviewer": "...",
+    "verifier": "..."
   }
 }
 ```
@@ -248,14 +259,14 @@ Migration must preserve ownership semantics rather than perform a blind rename.
 
 - The v1 Explorer model override is normalized to the v2 `explorer` key.
 - The legacy `repo_explorer.toml` is deleted only when it is still Foundry-managed and exactly matches the expected v1 template for the state-recorded model.
-- A drifted legacy profile blocks the whole plan.
+- Drift in a Foundry-owned v1 Explorer/Reviewer or v2 Explorer/Reviewer profile blocks the whole plan.
 - An orphan legacy profile carrying the Foundry management marker without matching v1 state blocks for inspection; a foreign file that merely reuses the old `repo_explorer.toml` name is not claimed or reserved.
 - A foreign target `explorer.toml` blocks the migration.
 - `--force` may back up/replace a foreign `explorer.toml` only with explicit user authorization.
 - If migration is blocked, the legacy profile is retained and no writes are applied.
 - v1 uninstall remains supported so users are never forced to migrate before removing Foundry.
 
-Exact v1 Explorer and Reviewer profile fixtures are frozen under `assets/legacy/v1/`. Migration and v1 uninstall compare against those immutable lifecycle fixtures rather than deriving legacy expectations from the current Runtime, so future Runtime changes cannot silently redefine what v1 meant.
+Exact v1 Explorer/Reviewer and v2 Explorer/Reviewer profile fixtures are frozen under `assets/legacy/v1/` and `assets/legacy/v2/`. Migration and old-version uninstall compare against those immutable lifecycle fixtures rather than deriving historical expectations from current Runtime. v2 → v3 preserves Explorer/Reviewer model overrides and adds Verifier only after ownership/drift checks pass.
 
 ## Installer model
 
@@ -297,3 +308,25 @@ Defaults come from the packaged runtime profiles themselves rather than separate
 - `reviewer`: `gpt-5.6` / `high`.
 
 Explicit model overrides are persisted in state and treated as intentional configuration by verification and future upgrades.
+
+
+## Workload-aware context policy
+
+Observed session archives showed that full-history forks and very long sessions can duplicate large tool histories across child sessions. Current MultiAgentV2 supports `fork_turns = "none"`, positive last-N history, and full-history; omitted `fork_turns` currently resolves to full history in Codex main. Foundry therefore treats history selection as an explicit cost/quality decision.
+
+- Self-contained Explorer/Verifier/Reviewer missions should prefer no-history spawning when the installed client reliably delivers the mission.
+- Missions that genuinely need prior turns should receive the smallest useful last-N history.
+- Full-history is exceptional and should be justified by dependency on broad conversation history.
+- If a client release has a no-history message-delivery bug, use the smallest useful last-N fallback instead of silently returning to full history.
+
+This policy is paired with explicit mission contracts so the child receives goal, paths, commands, known facts, constraints, acceptance evidence, expected return, and stop condition rather than inheriting a transcript and rediscovering the task.
+
+## Output and polling budget
+
+Foundry treats raw terminal output as a context resource. Long build/test/log/device output should remain in files when practical. A verification result should normally contain command, cwd, PASS/FAIL, exit code, elapsed time when available, concise diagnostics, and the full-log path.
+
+Repeated polling that does not require model judgment should execute inside one bounded shell/program invocation. Repeated deterministic validation without a relevant state change, transient-failure reason, or explicit request should be avoided.
+
+## Session checkpoints
+
+After a major milestone or repeated compaction, Root should checkpoint durable task state rather than preserving an unlimited transcript: goal, decisions, changed files, validation results, blockers, and next action. If stale tool history dominates the active context, a fresh session from that checkpoint is preferred.

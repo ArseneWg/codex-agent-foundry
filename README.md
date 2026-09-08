@@ -35,24 +35,25 @@ The baseline therefore keeps only roles that are frequent, narrow, reusable, and
                          │
               default source-code writer
                          │
-          ┌──────────────┴──────────────┐
-          ▼                             ▼
-      explorer                       reviewer
-  Terra / medium                  GPT-5.6 / high
-       no-edit                        no-edit
-          │                             │
-          └──────────────┬──────────────┘
-                         ▼
-                       Root
-                 evidence + final call
+          ┌──────────────┼──────────────┐
+          ▼               ▼              ▼
+      explorer         verifier       reviewer
+  Terra / medium      Luna / low    GPT-5.6 / high
+       no-edit          no-edit         no-edit
+          │               │              │
+          └───────────────┴──────────────┘
+                          ▼
+                        Root
+                  evidence + final call
 ```
 
-Only two project-scoped specialist profiles are persistent:
+Three project-scoped specialist profiles are persistent:
 
-- **`explorer`** — a Foundry project override of Codex's built-in `explorer`, specialized for read-heavy evidence gathering.
+- **`explorer`** — Codex-native exploration vocabulary with Foundry's evidence/cost contract.
+- **`verifier`** — a low-cost execution specialist for long/noisy/repetitive builds, tests, logs, waits, and environment checks.
 - **`reviewer`** — an independent cold-review specialist after material implementation.
 
-Implementation, verification, and research remain on demand.
+Implementation remains Root/built-in-worker territory; narrow research stays on demand.
 
 ## Build on Codex primitives instead of inventing parallel vocabulary
 
@@ -80,7 +81,8 @@ Current Codex documentation states that a custom agent with the same name as a b
 | Codebase exploration | **Project override `explorer`** | Exploration is frequent, naturally no-write, highly parallelizable, and benefits from a stable evidence/cost contract. |
 | Implementation / fixes | **Root by default; built-in `worker` on demand** | Codex already has a worker. A generic custom implementer would mostly duplicate it while increasing write-ownership complexity. |
 | Independent review | **Persistent `reviewer`** | A fresh no-edit context can challenge assumptions inherited by the writer and can be invoked inside the orchestration flow. |
-| Large/noisy test or log analysis | **Temporary verifier** | Verification varies heavily by project; a generic permanent tester adds little until a stable specialization exists. |
+| Single short deterministic validation | **Root directly** | Spawning a subagent solely for a cheaper model can cost more than the command. |
+| Large/noisy/repetitive validation | **Persistent `verifier`** | A stable no-edit execution/output contract isolates logs, waits and polling from Root context while using a low-cost profile. |
 | Planning / architecture | **Root** | Extra planner/architect personas add handoffs and blur final responsibility. |
 | Research | **Temporary unless a stable domain/tool specialization emerges** | A generic researcher is too broad; a docs/MCP/domain specialist may be worth adding later. |
 
@@ -111,7 +113,7 @@ This gives Foundry three useful properties:
 2. **Cost control.** Exploration is intentionally pinned to a cheaper/faster model profile than a potentially expensive root session.
 3. **Behavioral stability.** A no-edit, evidence-oriented contract is explicit in project instructions instead of being left entirely to a generic built-in default.
 
-Current Codex does **not** apply `sandbox_mode` from an agent role as a separate child filesystem sandbox. Role application pins supported fields such as model, reasoning effort, instructions, features, and skills, while spawned children inherit the live parent permission/sandbox profile. Explorer and Reviewer are therefore **behaviorally no-write**, not independently sandbox-enforced. If hard filesystem isolation is required, enforce it at the parent session/runtime level.
+Current Codex does **not** apply `sandbox_mode` from an agent role as a separate child filesystem sandbox. Role application pins supported fields such as model, reasoning effort, instructions, features, and skills, while spawned children inherit the live parent permission/sandbox profile. Explorer, Verifier, and Reviewer are therefore **behaviorally no-write**, not independently sandbox-enforced. If hard filesystem isolation is required, enforce it at the parent session/runtime level.
 
 ### Requested model versus actual resolved child model
 
@@ -172,13 +174,31 @@ A worker receives a write mission only when scope, ownership, intended behavior,
 
 This sacrifices some maximum parallelism for simpler ownership and fewer stale-write conflicts.
 
-## Why no permanent `tester`?
+## Why Verifier became persistent
 
-"Testing" is not one stable cross-repository job. Verification might mean unit tests, integration tests, compiler diagnostics, browser reproduction, CI log analysis, benchmarks, migration validation, or flaky-test triage.
+The original baseline kept verification temporary because repositories use different test frameworks. The observed workload changes that decision: the repeated cross-stack behavior is stable even when commands differ.
 
-A generic permanent `tester` would often add little beyond “run tests and report results.” Foundry keeps ordinary critical validation with Root and delegates **large/noisy independent verification** to a temporary agent.
+Verifier is deliberately **not a Tester persona**. It is an execution boundary:
 
-If a repository develops a stable specialized validation capability — for example a browser debugger with dedicated tooling — that can justify a real custom agent later.
+```text
+exact command/scope
+→ run / wait / aggregate polling
+→ keep large logs outside model context
+→ return PASS/FAIL + exit code + bounded diagnostics + log path
+→ STOP
+```
+
+A single short deterministic command still stays with Root. Verifier is for long-running, noisy, repetitive, or independently running work where context isolation and a low-cost model offset spawn overhead. It never edits code or broadens a failure into debugging; failure evidence returns to Root.
+
+Default profile: `gpt-5.6-luna / low`. If an installed Codex release rejects Luna for child agents, `--verifier-model gpt-5.6-terra` is the compatibility fallback. Foundry does not globally set a cheap default for all subagents because that could also downgrade `worker`.
+
+## Minimal history, bounded output, fewer model-mediated loops
+
+For self-contained Explorer/Verifier/Reviewer missions, Foundry prefers `fork_turns = "none"` when the installed client reliably supports no-history task delivery. If history is genuinely needed, use the smallest useful positive last-N; full-history is exceptional. If a client release has a no-history delivery bug, fall back to the smallest useful last-N rather than silently using the full transcript.
+
+Large command output should remain in files when practical. Repeated device/sysfs/process polling that does not require fresh reasoning should run in one bounded shell/program loop. The same deterministic validation should not be rerun without a relevant state change, a plausibly transient failure, or an explicit reason.
+
+After major milestones or repeated compaction, Root checkpoints goal, decisions, changed files, validation results, blockers, and next action. When stale tool history dominates, continuing from that checkpoint in a fresh session is preferred over carrying an ever-growing transcript.
 
 ## Why no permanent planner or architect?
 
@@ -254,8 +274,11 @@ unclear cross-module regression
 bounded mechanical implementation
 → worker may implement → reviewer → Root validates
 
-large/noisy verification
-→ temporary verifier
+single short validation
+→ Root directly
+
+large/noisy/repetitive verification
+→ verifier with minimal history + bounded output
 
 parallel substantial writes
 → separate worktrees
@@ -271,7 +294,8 @@ parallel substantial writes
 │       ├── config.toml
 │       └── agents/
 │           ├── explorer.toml      # overrides Codex built-in explorer
-│           └── reviewer.toml
+│           ├── reviewer.toml
+│           └── verifier.toml        # low-cost bounded verification executor
 ├── evals/                         # orchestration contract scenarios
 ├── .agents/skills/
 │   └── install-codex-agent-foundry/
@@ -333,6 +357,7 @@ The plan shows the effective role selections before writing:
 Selected agents:
 - explorer: gpt-5.6-terra / medium
 - reviewer: gpt-5.6 / high
+- verifier: gpt-5.6-luna / low
 ```
 
 Apply and verify:
@@ -354,7 +379,8 @@ your-project/
     ├── .agent-foundry.json
     └── agents/
         ├── explorer.toml
-        └── reviewer.toml
+        ├── reviewer.toml
+        └── verifier.toml
 ```
 
 ### Model overrides
@@ -362,7 +388,8 @@ your-project/
 ```bash
 python3 .../install.py /path/to/repo \
   --explorer-model <model> \
-  --reviewer-model <model>
+  --reviewer-model <model> \
+  --verifier-model <model>
 ```
 
 Overrides are stored in Foundry state and survive future updates unless explicitly changed.
@@ -391,18 +418,21 @@ The migration is ownership-safe:
 - an orphan Foundry-managed `repo_explorer.toml` without matching v1 state blocks for manual inspection, while a foreign file using that old name is left alone;
 - v1 uninstall remains supported using frozen v1 profile fixtures carried by the Installer Skill.
 
+Foundry v2 already uses `explorer.toml` + `reviewer.toml`. A v2 → v3 upgrade validates both profiles against frozen v2 lifecycle fixtures, preserves their model overrides, and then adds `verifier.toml`. Drift blocks the plan instead of being overwritten. v2 uninstall remains supported, and a foreign `verifier.toml` is not claimed by v2 state.
+
 Preview the migration with the same normal dry-run command. A blocked migration writes nothing.
 
-State schema/runtime version is now v2:
+State schema/runtime version is now v3. v1 and v2 lifecycle/uninstall remain supported through frozen legacy fixtures:
 
 ```json
 {
-  "version": 2,
-  "runtime_version": "2",
-  "managed_agents": ["explorer.toml", "reviewer.toml"],
+  "version": 3,
+  "runtime_version": "3",
+  "managed_agents": ["explorer.toml", "reviewer.toml", "verifier.toml"],
   "models": {
     "explorer": "gpt-5.6-terra",
-    "reviewer": "gpt-5.6"
+    "reviewer": "gpt-5.6",
+    "verifier": "gpt-5.6-luna"
   },
   "source_revision": "...",
   "runtime_sha256": "..."
@@ -432,7 +462,7 @@ This additionally checks:
 - `codex` is on `PATH`;
 - `codex --version` succeeds in the target repository;
 - strict local TOML/profile parsing passed;
-- selected Explorer/Reviewer model and reasoning effort.
+- selected Explorer/Reviewer/Verifier model and reasoning effort.
 
 It explicitly **does not** claim:
 

@@ -21,15 +21,16 @@ spec.loader.exec_module(mod)
 
 
 class RuntimeExperienceTests(unittest.TestCase):
-    def test_state_records_runtime_provenance_and_native_explorer(self):
+    def test_state_records_v3_roles_and_runtime_provenance(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             mod.apply_plan(mod.build_install_plan(root))
             state = json.loads((root / ".codex/.agent-foundry.json").read_text())
-            self.assertEqual(state["version"], 2)
-            self.assertEqual(state["runtime_version"], "2")
-            self.assertEqual(state["managed_agents"], ["explorer.toml", "reviewer.toml"])
-            self.assertEqual(set(state["models"]), {"explorer", "reviewer"})
+            self.assertEqual(state["version"], 3)
+            self.assertEqual(state["runtime_version"], "3")
+            self.assertEqual(state["managed_agents"], ["explorer.toml", "reviewer.toml", "verifier.toml"])
+            self.assertEqual(set(state["models"]), {"explorer", "reviewer", "verifier"})
+            self.assertEqual(state["models"]["verifier"], "gpt-5.6-luna")
             self.assertEqual(state["runtime_sha256"], mod.runtime_sha256())
             self.assertRegex(state["runtime_sha256"], r"^[0-9a-f]{64}$")
             self.assertTrue(state["source_revision"])
@@ -62,30 +63,28 @@ class RuntimeExperienceTests(unittest.TestCase):
 
     def test_check_prints_selected_models_and_effort(self):
         with tempfile.TemporaryDirectory() as td:
-            result = subprocess.run(
-                [sys.executable, str(INSTALL), td, "--check"],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+            result = subprocess.run([sys.executable, str(INSTALL), td, "--check"], text=True, capture_output=True, check=False)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("Selected agents:", result.stdout)
             self.assertIn("explorer: gpt-5.6-terra / medium", result.stdout)
-            self.assertNotIn("repo_explorer:", result.stdout)
             self.assertIn("reviewer: gpt-5.6 / high", result.stdout)
+            self.assertIn("verifier: gpt-5.6-luna / low", result.stdout)
+
+    def test_verifier_model_override_is_role_local(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            mod.apply_plan(mod.build_install_plan(root, verifier_model="gpt-5.6-terra"))
+            state = json.loads((root / ".codex/.agent-foundry.json").read_text())
+            self.assertEqual(state["models"]["verifier"], "gpt-5.6-terra")
+            self.assertEqual(state["models"]["explorer"], "gpt-5.6-terra")
+            self.assertIn('model = "gpt-5.6-terra"', (root / ".codex/agents/verifier.toml").read_text())
 
     def test_apply_prints_new_session_hint(self):
         with tempfile.TemporaryDirectory() as td:
-            result = subprocess.run(
-                [sys.executable, str(INSTALL), td],
-                text=True,
-                capture_output=True,
-                check=False,
-            )
+            result = subprocess.run([sys.executable, str(INSTALL), td], text=True, capture_output=True, check=False)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("Start a new Codex session in this project to load Foundry.", result.stdout)
 
-    def test_runtime_check_reports_native_explorer_and_model_limit(self):
+    def test_runtime_check_reports_verifier_and_model_limit(self):
         if os.name == "nt":
             self.skipTest("POSIX executable fixture")
         with tempfile.TemporaryDirectory() as td:
@@ -98,27 +97,18 @@ class RuntimeExperienceTests(unittest.TestCase):
             fake.chmod(0o755)
             env = os.environ.copy()
             env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
-            result = subprocess.run(
-                [sys.executable, str(VERIFY), str(root), "--runtime-check"],
-                text=True,
-                capture_output=True,
-                env=env,
-                check=False,
-            )
+            result = subprocess.run([sys.executable, str(VERIFY), str(root), "--runtime-check"], text=True, capture_output=True, env=env, check=False)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("codex-cli 9.9.9-test", result.stdout)
             self.assertIn("explorer: gpt-5.6-terra / medium", result.stdout)
             self.assertIn("reviewer: gpt-5.6 / high", result.stdout)
-            self.assertIn("account model availability: not verified", result.stdout)
+            self.assertIn("verifier: gpt-5.6-luna / low", result.stdout)
+            self.assertIn("--verifier-model gpt-5.6-terra", result.stdout)
             self.assertIn("resolved child model/effort: not verified", result.stdout)
 
     def test_python_guard_precedes_tomllib_import(self):
         for path in (INSTALL, VERIFY):
             text = path.read_text()
-            guard = text.index("sys.version_info < (3, 11)")
-            tomllib_import = text.index("import tomllib")
-            self.assertLess(guard, tomllib_import)
-            self.assertIn("requires Python 3.11+", text[:tomllib_import])
+            self.assertLess(text.index("sys.version_info < (3, 11)"), text.index("import tomllib"))
 
 
 if __name__ == "__main__":

@@ -17,27 +17,34 @@ class RuntimeContractTests(unittest.TestCase):
         value = config["agents"]["max_concurrent_threads_per_session"]
         self.assertIsInstance(value, int)
         self.assertGreaterEqual(value, 1)
-        for name in ("explorer.toml", "reviewer.toml"):
+        for name in ("explorer.toml", "reviewer.toml", "verifier.toml"):
             profile = tomllib.loads((RUNTIME / ".codex/agents" / name).read_text())
             self.assertNotIn("sandbox_mode", profile)
             self.assertIn("Do not edit files", profile["developer_instructions"])
             self.assertIn("spawn subagents", profile["developer_instructions"])
         explorer = tomllib.loads((RUNTIME / ".codex/agents/explorer.toml").read_text())
+        verifier = tomllib.loads((RUNTIME / ".codex/agents/verifier.toml").read_text())
         self.assertEqual(explorer["name"], "explorer")
+        self.assertEqual(verifier["name"], "verifier")
+        self.assertEqual(verifier["model"], "gpt-5.6-luna")
+        self.assertEqual(verifier["model_reasoning_effort"], "low")
         self.assertFalse((RUNTIME / ".codex/agents/repo_explorer.toml").exists())
 
-    def test_runtime_policy_contains_core_orchestration_invariants(self):
+    def test_runtime_policy_contains_workload_aware_invariants(self):
         policy = (RUNTIME / "AGENTS.fragment.md").read_text()
         required = [
             "root is the default source-code writer",
+            "single short deterministic command",
+            "fork_turns = \"none\"",
+            "smallest useful positive last-N",
+            "Full-history forks are exceptional",
+            "one bounded shell/program loop",
+            "Do not repeat a deterministic build/test/check",
+            "full-log path",
+            "fresh session",
             "one source-code writer per checkout",
-            "separate Git worktrees",
             "Subagents must not spawn additional subagents by default",
-            "one-level fan-out",
             "Agent agreement is not evidence of correctness",
-            "stop condition",
-            "overrides Codex's built-in `explorer`",
-            "not an independent per-role sandbox boundary",
         ]
         for text in required:
             self.assertIn(text, policy)
@@ -52,35 +59,38 @@ class RuntimeContractTests(unittest.TestCase):
         header = text.split("---\n", 2)[1]
         self.assertIn("\nname:", "\n" + header)
         self.assertIn("\ndescription:", "\n" + header)
+        self.assertIn('version: "3"', header)
         self.assertNotIn("\ncompatibility:", "\n" + header)
 
-    def test_eval_scenarios_cover_core_routes(self):
+    def test_eval_scenarios_cover_workload_routes(self):
         payload = json.loads((ROOT / "evals/scenarios.json").read_text())
+        self.assertEqual(payload["version"], 3)
         ids = {s["id"] for s in payload["scenarios"]}
         required = {
             "trivial-change",
+            "single-short-validation",
             "unclear-cross-module-bug",
             "bounded-implementation",
             "noisy-verification",
+            "polling-device-state",
+            "repeated-validation-no-state-change",
             "parallel-substantial-writes",
         }
         self.assertTrue(required.issubset(ids))
         expected_keys = {
-            "explorer",
-            "reviewer",
-            "worker",
-            "temporary_verifier",
-            "worktrees",
-            "parallel_writers_same_checkout",
+            "explorer", "reviewer", "worker", "verifier", "worktrees",
+            "parallel_writers_same_checkout", "minimal_history", "bounded_output",
+            "aggregate_polling", "avoid_redundant_rerun",
         }
         for scenario in payload["scenarios"]:
             self.assertEqual(set(scenario["expected"]), expected_keys)
         scenarios = {s["id"]: s for s in payload["scenarios"]}
-        self.assertFalse(scenarios["trivial-change"]["expected"]["explorer"])
-        self.assertTrue(scenarios["unclear-cross-module-bug"]["expected"]["explorer"])
-        self.assertTrue(scenarios["bounded-implementation"]["expected"]["worker"])
-        self.assertTrue(scenarios["noisy-verification"]["expected"]["temporary_verifier"])
-        self.assertFalse(scenarios["noisy-verification"]["expected"]["reviewer"])
+        self.assertFalse(scenarios["single-short-validation"]["expected"]["verifier"])
+        self.assertTrue(scenarios["noisy-verification"]["expected"]["verifier"])
+        self.assertTrue(scenarios["polling-device-state"]["expected"]["aggregate_polling"])
+        self.assertTrue(scenarios["repeated-validation-no-state-change"]["expected"]["avoid_redundant_rerun"])
+        self.assertTrue(scenarios["unclear-cross-module-bug"]["expected"]["minimal_history"])
+        self.assertTrue(scenarios["parallel-substantial-writes"]["expected"]["worktrees"])
         self.assertFalse(scenarios["parallel-substantial-writes"]["expected"]["parallel_writers_same_checkout"])
 
     def test_installer_default_models_come_from_runtime_profiles(self):
@@ -91,7 +101,7 @@ class RuntimeContractTests(unittest.TestCase):
         assert spec.loader is not None
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
-        for filename in ("explorer.toml", "reviewer.toml"):
+        for filename in ("explorer.toml", "reviewer.toml", "verifier.toml"):
             runtime_profile = tomllib.loads((RUNTIME / ".codex/agents" / filename).read_text())
             self.assertEqual(module.bundled_profile_model(filename), runtime_profile["model"])
 

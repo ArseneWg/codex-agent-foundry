@@ -1,15 +1,15 @@
 ---
 name: install-codex-agent-foundry
-description: Install, update, inspect, verify, migrate, or uninstall Codex Agent Foundry in a target repository. Use when a user wants the Foundry multi-agent orchestration policy, project .codex configuration, the project-scoped explorer/reviewer agents, safe upgrades, model overrides, runtime checks, or conservative removal without overwriting unrelated project configuration.
+description: Install, update, inspect, verify, migrate, or uninstall Codex Agent Foundry in a target repository. Use when a user wants workload-aware Codex multi-agent policy, project .codex configuration, explorer/reviewer/verifier profiles, safe upgrades, model overrides, runtime checks, or conservative removal without overwriting unrelated project configuration.
 metadata:
-  version: "2"
+  version: "3"
 ---
 
 # Install Codex Agent Foundry
 
 Use this Skill only to distribute or maintain the Foundry orchestration runtime. The runtime policy itself lives in the bundled project assets and defines how Codex agents collaborate.
 
-Foundry uses Codex-native role vocabulary where possible. Its project-scoped `explorer` profile intentionally has the same name as Codex's built-in `explorer`, so the project profile overrides that built-in role with Foundry's pinned no-edit evidence contract, model, and reasoning effort. `reviewer` remains a Foundry custom specialist.
+Foundry v3 keeps Root as the final owner and uses three narrow project profiles: `explorer` for investigation, `verifier` for bounded noisy/repetitive validation, and `reviewer` for cold review. `worker` remains Codex built-in and on demand.
 
 ## Requirements
 
@@ -20,42 +20,39 @@ Both entry scripts check the interpreter version before importing `tomllib` and 
 
 ## Workflow
 
-1. Resolve the target repository. Default to the current working directory only when the user's intent clearly refers to it.
-2. Inspect existing `AGENTS.md`, `.codex/config.toml`, `.codex/agents/`, and Foundry state when present.
-3. Run `scripts/install.py <target> --check` first. The plan must list every file that would be created, updated, backed up, deleted, or blocked, and show the selected Explorer/Reviewer model and reasoning effort.
-4. Explain conflicts. Do not silently overwrite foreign same-name agent profiles.
-5. If the plan is safe and matches the request, run `scripts/install.py <target>`.
-6. Run `scripts/verify.py <target>`.
-7. When the user asks for an environment/runtime check, run `scripts/verify.py <target> --runtime-check`. This checks `codex` on `PATH`, reports `codex --version`, and prints selected role models. It does not claim account-level model availability or resolved spawned-child model selection.
-8. Report what was installed, preserved, migrated, updated, backed up, or left conflicted, and tell the user to start a new Codex session in the target project.
+1. Resolve the target repository and inspect existing `AGENTS.md`, `.codex/config.toml`, `.codex/agents/`, and Foundry state.
+2. Run `scripts/install.py <target> --check` first. The plan must show every path and the selected Explorer/Reviewer/Verifier model and effort.
+3. Explain conflicts. Do not silently overwrite foreign same-name profiles.
+4. Apply with `scripts/install.py <target>`, then run `scripts/verify.py <target>`.
+5. When requested, run `scripts/verify.py <target> --runtime-check`. It checks Codex CLI/version and configured role models; it does not prove account entitlement or resolved child models.
+6. Tell the user to start a new Codex session in the target project.
 
-For removal, use `scripts/install.py <target> --uninstall --check` before `--uninstall`.
+Model overrides are role-specific:
 
-## Legacy v1 migration
+```bash
+scripts/install.py <target>   --explorer-model <model>   --reviewer-model <model>   --verifier-model <model>
+```
 
-Foundry v1 installed `.codex/agents/repo_explorer.toml`. Current Foundry migrates that role to `.codex/agents/explorer.toml` so the project directly overrides Codex's built-in `explorer`.
+The default Verifier is `gpt-5.6-luna` / `low`. If an installed Codex release rejects Luna for child agents, use `--verifier-model gpt-5.6-terra`; do not globally downgrade all subagents.
 
-Migration is conservative:
+## Workload-aware runtime rules
 
-- preserve the v1 Explorer model override;
-- remove the legacy profile only when it is still Foundry-managed and exactly matches the expected v1 profile;
-- block the whole plan if the legacy profile drifted or lost its Foundry marker;
-- block if a foreign `.codex/agents/explorer.toml` already exists;
-- use `--force` only when the user explicitly authorizes backing up and replacing that foreign `explorer.toml`;
-- keep v1 uninstall supported;
-- leave a foreign `repo_explorer.toml` alone once Foundry no longer owns that legacy name.
+- Do not spawn Verifier for one short deterministic command merely to use a cheaper model.
+- Use Verifier for long/noisy builds, tests, logs, device/environment checks, waits, or repeated polling that can run independently.
+- Prefer minimal-history missions. When supported and self-contained, use `fork_turns = "none"`; if a client release fails no-history task delivery, use the smallest useful last-N history rather than full history.
+- Aggregate polling into one bounded shell/program loop when no fresh model judgment is needed per sample.
+- Keep large stdout/stderr in files and return bounded evidence plus a log path.
+- Avoid deterministic reruns when relevant state has not changed.
+- Explorer, Verifier, and Reviewer are behaviorally no-write, not independent filesystem sandboxes; hard isolation comes from parent session/runtime permissions.
 
-## Safety
+## Lifecycle safety
 
-- The installer owns only the managed Foundry block in `AGENTS.md`.
-- Preserve unrelated `AGENTS.md` content.
-- Preserve valid user concurrency values.
-- Update an agent profile automatically only when it is already marked `managed-by: codex-agent-foundry`.
-- Use `--force` only when the user explicitly authorizes backup and replacement of a foreign same-name profile.
-- Model overrides are explicit install options and are recorded in Foundry state so verification can distinguish customization from drift.
-- Foundry state records runtime version, best-effort source revision, and a deterministic runtime SHA-256 fingerprint for auditing and reproduction.
-- `source_revision` is recorded only when the installer can prove it is running from a clean Foundry checkout whose `runtime/` matches the packaged assets; otherwise it is `unknown`. `runtime_sha256` remains the authoritative content fingerprint.
-- `--runtime-check` validates requested local configuration, not the actual resolved model of a spawned child thread.
-- Explorer/reviewer no-write behavior is an instruction and orchestration contract, not a per-role filesystem sandbox. Current Codex spawned roles inherit the live parent permission/sandbox profile; hard isolation must come from the parent session/runtime.
+- v1 `repo_explorer` migration and v1 uninstall remain supported with frozen v1 fixtures.
+- v2 Explorer/Reviewer upgrade and v2 uninstall remain supported with frozen v2 fixtures.
+- v3 adds `verifier.toml`; a foreign same-name Verifier blocks unless the user explicitly authorizes `--force` backup + replacement.
+- Update managed profiles only when ownership is established; preserve unrelated project configuration.
+- State records runtime version, role model selections, conservative source revision, and deterministic runtime SHA-256.
 
-Read `references/design.md` when changing runtime behavior, role identity, migration semantics, or installer safety guarantees.
+For removal, run `scripts/install.py <target> --uninstall --check` before `--uninstall`.
+
+Read `references/design.md` when changing runtime behavior, role identity, model routing, history policy, migration semantics, or installer safety guarantees.

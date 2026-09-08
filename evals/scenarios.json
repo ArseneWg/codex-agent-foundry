@@ -1,65 +1,45 @@
 {
-  "version": 2,
+  "version": 3,
   "scenarios": [
     {
       "id": "trivial-change",
       "description": "A tiny local edit with obvious scope.",
-      "expected": {
-        "explorer": false,
-        "reviewer": false,
-        "worker": false,
-        "temporary_verifier": false,
-        "worktrees": false,
-        "parallel_writers_same_checkout": false
-      }
+      "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": false, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": false, "bounded_output": false, "aggregate_polling": false, "avoid_redundant_rerun": false}
+    },
+    {
+      "id": "single-short-validation",
+      "description": "Root already knows one short deterministic validation command with small output.",
+      "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": false, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": false, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
     },
     {
       "id": "unclear-cross-module-bug",
       "description": "A regression spans modules and the execution path is unclear.",
-      "expected": {
-        "explorer": true,
-        "reviewer": true,
-        "worker": false,
-        "temporary_verifier": false,
-        "worktrees": false,
-        "parallel_writers_same_checkout": false
-      }
+      "expected": {"explorer": true, "reviewer": true, "worker": false, "verifier": false, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
     },
     {
       "id": "bounded-implementation",
       "description": "A mechanical implementation has explicit files, ownership and acceptance criteria.",
-      "expected": {
-        "explorer": false,
-        "reviewer": true,
-        "worker": true,
-        "temporary_verifier": false,
-        "worktrees": false,
-        "parallel_writers_same_checkout": false
-      }
+      "expected": {"explorer": false, "reviewer": true, "worker": true, "verifier": false, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
     },
     {
       "id": "noisy-verification",
-      "description": "Large tests and logs can be analyzed independently.",
-      "expected": {
-        "explorer": false,
-        "reviewer": false,
-        "worker": false,
-        "temporary_verifier": true,
-        "worktrees": false,
-        "parallel_writers_same_checkout": false
-      }
+      "description": "Large tests or logs can run independently and should not pollute Root context.",
+      "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": true, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
+    },
+    {
+      "id": "polling-device-state",
+      "description": "A device/sysfs condition needs repeated polling without fresh reasoning on every sample.",
+      "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": true, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": true, "avoid_redundant_rerun": false}
+    },
+    {
+      "id": "repeated-validation-no-state-change",
+      "description": "The same deterministic validation already ran and no relevant state changed.",
+      "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": false, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": false, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": true}
     },
     {
       "id": "parallel-substantial-writes",
       "description": "Two substantial independent implementations are needed concurrently.",
-      "expected": {
-        "explorer": false,
-        "reviewer": false,
-        "worker": false,
-        "temporary_verifier": false,
-        "worktrees": true,
-        "parallel_writers_same_checkout": false
-      }
+      "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": false, "worktrees": true, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
     }
   ]
 }

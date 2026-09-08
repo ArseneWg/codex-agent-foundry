@@ -16,6 +16,7 @@ FILES = [
     ".codex/config.toml",
     ".codex/agents/explorer.toml",
     ".codex/agents/reviewer.toml",
+    ".codex/agents/verifier.toml",
 ]
 LEGACY_PACKAGED_FILES = [
     ".codex/agents/repo_explorer.toml",

@@ -10,14 +10,14 @@
 
 - Root 应该一直负责什么？
 - 哪些工作值得交给 Subagent？
-- 为什么长期只保留 Explorer 和 Reviewer？
+- 为什么现在长期保留 Explorer / Verifier / Reviewer？
 - Codex 已经有 `explorer` / `worker`，Foundry 应该怎么利用它们？
-- 为什么没有常驻 `implementer`、`tester`、`architect`？
+- 为什么没有常驻 `implementer` / `architect`，以及为什么 Verifier 现在值得长期化？
 - 为什么一个 checkout 默认只有一个 writer？
 - Explorer 如何控制模型成本？
 - 静态配置写了 Terra / medium，和“实际 child 一定用了 Terra / medium”有什么区别？
 - v1 的 `repo_explorer` 怎么安全迁移？
-- 什么情况下才值得增加第三个长期 Agent？
+- 什么情况下才值得再增加新的长期 Agent？
 
 Installer Skill、升级迁移、冲突保护、验证、测试和 CI，都是为了把这套协作规范安全地分发和维护到不同仓库。
 
@@ -57,24 +57,25 @@ Planner
                          │
                  默认 source-code writer
                          │
-          ┌──────────────┴──────────────┐
-          ▼                             ▼
-      explorer                       reviewer
-  Terra / medium                  GPT-5.6 / high
-      不写                            不写
-          │                             │
-          └──────────────┬──────────────┘
-                         ▼
-                       Root
-                 根据证据做最终判断
+          ┌──────────────┼──────────────┐
+          ▼               ▼              ▼
+      explorer         verifier       reviewer
+  Terra / medium      Luna / low    GPT-5.6 / high
+      不写              不写             不写
+          │               │              │
+          └───────────────┴──────────────┘
+                          ▼
+                        Root
+                  根据证据做最终判断
 ```
 
-长期项目级 profile 只有两个：
+长期项目级 profile 现在有三个：
 
 - `explorer`：覆盖 Codex 内置同名 Explorer，负责 read-heavy 证据调查；
+- `verifier`：低成本执行长时间、noisy、重复性的 build/test/log/wait/device 检查；
 - `reviewer`：实现后的独立 cold review。
 
-实现、验证、研究默认按需出现。
+实现仍由 Root / built-in `worker` 负责；窄范围 research 按需出现。
 
 ---
 
@@ -119,7 +120,7 @@ Foundry repo_explorer
 
 ---
 
-## 3. 为什么长期恰好保留 Explorer + Reviewer？
+## 3. 为什么长期保留 Explorer + Verifier + Reviewer？
 
 | 工作 | Foundry 选择 | 原因 |
 | --- | --- | --- |
@@ -127,7 +128,8 @@ Foundry repo_explorer
 | 代码库调查 | **项目级 `explorer` override** | 高频、天然只读、适合并行、隔离收益明显，同时适合独立控制成本 |
 | 实现 / 修复 | **Root 默认；built-in `worker` 按需** | Codex 已有 worker，再造 generic implementer 收益低且增加写 ownership |
 | 独立 Review | **长期 `reviewer`** | cold context 可以挑战 writer 的原有假设 |
-| 大型 test / log / diagnostics | **临时 verifier** | 验证方式高度项目相关，generic tester 稳定价值不高 |
+| 单个短小确定性验证 | **Root 直接执行** | 仅为了便宜模型去 spawn，协调成本可能比命令本身更高 |
+| 大型/noisy/重复性验证 | **长期 `verifier`** | 稳定的是执行/输出边界：低成本运行、聚合等待、压缩日志、只回传证据 |
 | Planner / Architect | **Root** | 高层判断与用户目标强耦合，多一层角色会增加上下文传递和责任模糊 |
 | Research | **临时；稳定领域出现后再专门化** | 泛化 researcher 太宽，绑定稳定 MCP/领域后才更值得长期存在 |
 
@@ -197,6 +199,7 @@ grep / symbol lookup
 
 ```text
 explorer → gpt-5.6-terra / medium
+verifier → gpt-5.6-luna / low
 reviewer → gpt-5.6 / high
 ```
 
@@ -213,7 +216,7 @@ default_subagent_model = "..."
 
 Foundry 明确要求证据导向、不改代码、不递归 delegation。这样 Root 收到的是 investigation evidence，而不是第二个偷偷开始实现的 writer。
 
-需要明确一个边界：当前 Codex 的 agent role 不会把 `sandbox_mode` 应用成独立的 child 文件系统 sandbox。role 可以固定 model / reasoning effort / instructions / features / skills 等受支持字段，但 spawned child 的 permission/sandbox profile 会继承当前 parent session。因此 Explorer / Reviewer 的“不写文件”是**行为与编排契约**，不是独立 sandbox 强制。如果需要硬隔离，应在 parent session/runtime 层设置权限。
+需要明确一个边界：当前 Codex 的 agent role 不会把 `sandbox_mode` 应用成独立的 child 文件系统 sandbox。role 可以固定 model / reasoning effort / instructions / features / skills 等受支持字段，但 spawned child 的 permission/sandbox profile 会继承当前 parent session。因此 Explorer / Verifier / Reviewer 的“不写文件”是**行为与编排契约**，不是独立 sandbox 强制。如果需要硬隔离，应在 parent session/runtime 层设置权限。
 
 ---
 
@@ -252,7 +255,7 @@ Terra / medium
 verify.py --runtime-check
 ```
 
-会显示配置中的 Explorer / Reviewer model + effort，也会检查 `codex --version`，但会明确写：
+会显示配置中的 Explorer / Verifier / Reviewer model + effort，也会检查 `codex --version`，但会明确写：
 
 ```text
 resolved child model/effort: not verified
@@ -336,36 +339,29 @@ Worker 只有在 `scope / ownership / behavior / constraints / acceptance / vali
 
 ---
 
-## 8. 为什么没有长期 `tester`？
+## 8. 为什么现在增加长期 `verifier`？
 
-“测试”不是稳定统一的跨项目能力，它可能是：
+这不是新增一个“Tester 职位”，而是根据实际 workload 把一个稳定的**执行边界**长期化。
 
-```text
-unit / integration tests
-compiler diagnostics
-browser reproduction
-CI logs
-benchmark
-migration validation
-flaky-test triage
-```
-
-generic `tester.toml` 很容易最后只剩一句“跑测试并汇报”。
-
-Foundry 选择：
+你的审计显示，大量成本来自 shell/read/wait 循环、长会话、build/log 输出、device/sysfs 轮询和 fork 历史继承；测试调用本身并不是主要数量来源。因此 v3 的 Verifier 只负责：
 
 ```text
-小型 / 关键验证
-→ Root
-
-大型 / noisy / 独立验证
-→ 临时 verifier
-
-反复出现的特殊验证能力
-→ 再考虑真正 custom specialist
+收到明确 command / cwd / stop condition
+→ 执行、等待、聚合机械轮询
+→ 大日志尽量留文件
+→ 返回 PASS/FAIL + exit code + 精简错误 + log path
+→ STOP
 ```
 
-例如有固定 browser tooling 的 browser debugger，就比 generic tester 更值得长期存在。
+单个短小确定性命令仍由 Root 直接跑。Verifier 默认 `gpt-5.6-luna / low`，只在“长/noisy/重复/可独立运行”时值得 spawn；失败不自己 debug、不改代码，证据交回 Root。若某个 Codex release 不允许 child 使用 Luna，可用 `--verifier-model gpt-5.6-terra` 覆盖，不能为了省成本全局降低所有 Subagent。
+
+### 最小历史 + 输出预算
+
+自包含的 Explorer / Verifier / Reviewer mission，在客户端可靠支持时优先 `fork_turns = "none"`；确实依赖历史时只给最小 last-N；full history 是例外。如果特定 release 的 no-history task delivery 有 bug，就退到最小可用 last-N，不默认回到全部历史。
+
+机械轮询应尽量合并进一次有界 shell/program loop；大 build/test/log 输出留在文件，只回传证据和路径；同一 deterministic validation 在 relevant state 没变化时不应重复执行。
+
+完成大 milestone 或多次 compaction 后，Root 应 checkpoint：目标、决策、改动文件、验证结果、blocker、下一步。如果旧 tool history 已明显主导上下文，优先新 session 从 checkpoint 继续。
 
 ---
 
@@ -544,6 +540,7 @@ PLAN 顶部会显示：
 Selected agents:
 - explorer: gpt-5.6-terra / medium
 - reviewer: gpt-5.6 / high
+- verifier: gpt-5.6-luna / low
 ```
 
 确认后安装并验证：
@@ -569,7 +566,8 @@ your-project/
     ├── .agent-foundry.json
     └── agents/
         ├── explorer.toml
-        └── reviewer.toml
+        ├── reviewer.toml
+        └── verifier.toml
 ```
 
 ### 模型覆盖
@@ -577,7 +575,8 @@ your-project/
 ```bash
 python3 .../install.py /path/to/repo \
   --explorer-model <model> \
-  --reviewer-model <model>
+  --reviewer-model <model> \
+  --verifier-model <model>
 ```
 
 选择会写进 state，后续 update 会保留，除非显式换模型。
@@ -610,24 +609,27 @@ Installer 会：
 - 如果没有匹配的 v1 state，只有带 Foundry 管理标记的 orphan `repo_explorer.toml` 才会阻塞人工检查；用户自己的同名 legacy 文件会保留且不影响 v2；
 - v1 uninstall 仍然支持，并使用 Installer Skill 内冻结的 v1 profile fixture 校验旧文件。
 
+已有 Foundry v2 的项目不需要角色 rename：Installer 会用冻结的 v2 Explorer/Reviewer fixture 校验 ownership 和 drift，保留两个模型 override，再新增 `verifier.toml`。如果 v2 profile 已被修改则整个升级阻塞；v2 uninstall 仍支持，而且不会认领一个 foreign `verifier.toml`。
+
 所以升级前仍然先运行：
 
 ```bash
 python3 .../install.py /path/to/repo --check
 ```
 
-### State v2
+### State v3
 
 新的 state 语义：
 
 ```json
 {
-  "version": 2,
-  "runtime_version": "2",
-  "managed_agents": ["explorer.toml", "reviewer.toml"],
+  "version": 3,
+  "runtime_version": "3",
+  "managed_agents": ["explorer.toml", "reviewer.toml", "verifier.toml"],
   "models": {
     "explorer": "gpt-5.6-terra",
-    "reviewer": "gpt-5.6"
+    "reviewer": "gpt-5.6",
+    "verifier": "gpt-5.6-luna"
   },
   "source_revision": "...",
   "runtime_sha256": "..."

@@ -23,26 +23,40 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-VERSION = 2
+VERSION = 3
 LEGACY_VERSION = 1
-RUNTIME_VERSION = "2"
+PREVIOUS_VERSION = 2
+SUPPORTED_VERSIONS = {LEGACY_VERSION, PREVIOUS_VERSION, VERSION}
+RUNTIME_VERSION = "3"
 DEFAULT_CONCURRENCY = 4
 START = "<!-- codex-agent-foundry:start -->"
 END = "<!-- codex-agent-foundry:end -->"
 MANAGED = "# managed-by: codex-agent-foundry"
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 ASSET_ROOT = SKILL_ROOT / "assets" / "project"
-LEGACY_ASSET_ROOT = SKILL_ROOT / "assets" / "legacy" / "v1"
+LEGACY_ROOT = SKILL_ROOT / "assets" / "legacy"
+LEGACY_ASSET_ROOT = LEGACY_ROOT / "v1"
 RUNTIME_FILES = (
     "AGENTS.fragment.md",
     ".codex/config.toml",
     ".codex/agents/explorer.toml",
     ".codex/agents/reviewer.toml",
+    ".codex/agents/verifier.toml",
 )
-CURRENT_MANAGED_AGENTS = ["explorer.toml", "reviewer.toml"]
-LEGACY_MANAGED_AGENTS = ["repo_explorer.toml", "reviewer.toml"]
-CURRENT_MODEL_KEYS = {"explorer", "reviewer"}
-LEGACY_MODEL_KEYS = {"repo_explorer", "reviewer"}
+V1_MANAGED_AGENTS = ["repo_explorer.toml", "reviewer.toml"]
+V2_MANAGED_AGENTS = ["explorer.toml", "reviewer.toml"]
+CURRENT_MANAGED_AGENTS = ["explorer.toml", "reviewer.toml", "verifier.toml"]
+LEGACY_MANAGED_AGENTS = V1_MANAGED_AGENTS
+MANAGED_AGENTS_BY_VERSION = {
+    LEGACY_VERSION: V1_MANAGED_AGENTS,
+    PREVIOUS_VERSION: V2_MANAGED_AGENTS,
+    VERSION: CURRENT_MANAGED_AGENTS,
+}
+MODEL_KEYS_BY_VERSION = {
+    LEGACY_VERSION: {"repo_explorer", "reviewer"},
+    PREVIOUS_VERSION: {"explorer", "reviewer"},
+    VERSION: {"explorer", "reviewer", "verifier"},
+}
 
 Action = Literal["create", "update", "delete", "backup", "unchanged", "conflict"]
 
@@ -99,7 +113,7 @@ def read_text(path: Path) -> str:
         raise InstallError(f"{path}: managed text file is not valid UTF-8") from exc
 
 
-def reject_managed_symlink_paths(target: Path, *, include_explorer: bool = True) -> None:
+def reject_managed_symlink_paths(target: Path, *, profile_names: list[str] | tuple[str, ...] | None = None) -> None:
     directory_paths = {".codex", ".codex/agents"}
     paths = [
         ".codex",
@@ -107,10 +121,9 @@ def reject_managed_symlink_paths(target: Path, *, include_explorer: bool = True)
         "AGENTS.md",
         ".codex/config.toml",
         ".codex/.agent-foundry.json",
-        ".codex/agents/reviewer.toml",
     ]
-    if include_explorer:
-        paths.append(".codex/agents/explorer.toml")
+    for name in CURRENT_MANAGED_AGENTS if profile_names is None else profile_names:
+        paths.append(f".codex/agents/{name}")
     for rel in paths:
         path = target / rel
         if path.is_symlink():
@@ -413,20 +426,31 @@ def default_profile(name: str) -> str:
     return content
 
 
-def legacy_profile(name: str) -> str:
-    if name not in LEGACY_MANAGED_AGENTS:
-        raise InstallError(f"unsupported legacy profile: {name}")
-    path = LEGACY_ASSET_ROOT / name
+def lifecycle_profile(version: int, name: str) -> str:
+    if version == VERSION:
+        return default_profile(name)
+    expected = MANAGED_AGENTS_BY_VERSION.get(version)
+    if expected is None or name not in expected:
+        raise InstallError(f"unsupported Foundry v{version} profile: {name}")
+    path = LEGACY_ROOT / f"v{version}" / name
     content = read_text(path)
     if not content:
-        raise InstallError(f"missing bundled legacy profile: {path}")
+        raise InstallError(f"missing bundled Foundry v{version} lifecycle profile: {path}")
     try:
         tomllib.loads(content)
     except tomllib.TOMLDecodeError as exc:
-        raise InstallError(f"bundled legacy profile is invalid TOML: {path}: {exc}") from exc
+        raise InstallError(f"bundled Foundry v{version} profile is invalid TOML: {path}: {exc}") from exc
     if not is_foundry_managed(content):
-        raise InstallError(f"bundled legacy profile is missing Foundry management marker: {path}")
+        raise InstallError(f"bundled Foundry v{version} profile is missing Foundry management marker: {path}")
     return content
+
+
+def legacy_profile(name: str) -> str:
+    return lifecycle_profile(LEGACY_VERSION, name)
+
+
+def previous_profile(name: str) -> str:
+    return lifecycle_profile(PREVIOUS_VERSION, name)
 
 
 def legacy_explorer_profile() -> str:
@@ -469,8 +493,9 @@ def bundled_profile_model(name: str) -> str:
 
 def state_version(payload: dict[str, object]) -> int:
     value = payload.get("version")
-    if not isinstance(value, int) or isinstance(value, bool) or value not in {LEGACY_VERSION, VERSION}:
-        raise InstallError(f"unsupported Foundry state version {value!r}; expected {LEGACY_VERSION} or {VERSION}")
+    if not isinstance(value, int) or isinstance(value, bool) or value not in SUPPORTED_VERSIONS:
+        supported = ", ".join(str(v) for v in sorted(SUPPORTED_VERSIONS))
+        raise InstallError(f"unsupported Foundry state version {value!r}; expected one of {supported}")
     return value
 
 
@@ -483,13 +508,13 @@ def validate_state(path: Path, payload: dict[str, object]) -> None:
         version = state_version(payload)
     except InstallError as exc:
         raise InstallError(f"{path}: {exc}") from exc
-    if version == VERSION:
+    if version >= PREVIOUS_VERSION:
         provenance_required = {"runtime_version", "source_revision", "runtime_sha256"}
         missing = sorted(provenance_required - payload.keys())
         if missing:
-            raise InstallError(f"{path}: Foundry v{VERSION} state is missing provenance fields: {', '.join(missing)}")
-    expected_agents = LEGACY_MANAGED_AGENTS if version == LEGACY_VERSION else CURRENT_MANAGED_AGENTS
-    expected_model_keys = LEGACY_MODEL_KEYS if version == LEGACY_VERSION else CURRENT_MODEL_KEYS
+            raise InstallError(f"{path}: Foundry v{version} state is missing provenance fields: {', '.join(missing)}")
+    expected_agents = MANAGED_AGENTS_BY_VERSION[version]
+    expected_model_keys = MODEL_KEYS_BY_VERSION[version]
     if payload.get("managed_agents") != expected_agents:
         raise InstallError(f"{path}: unexpected managed_agents in Foundry state")
     if payload.get("agents_md_markers") != [START, END]:
@@ -536,15 +561,14 @@ def normalized_models(state: dict[str, object] | None) -> dict[str, str]:
     models = state.get("models")
     if not isinstance(models, dict):
         return {}
-    if state.get("version") == LEGACY_VERSION:
-        return {
-            "explorer": str(models.get("repo_explorer") or ""),
-            "reviewer": str(models.get("reviewer") or ""),
-        }
-    return {
-        "explorer": str(models.get("explorer") or ""),
+    version = state_version(state)
+    result = {
+        "explorer": str(models.get("repo_explorer") if version == LEGACY_VERSION else models.get("explorer") or ""),
         "reviewer": str(models.get("reviewer") or ""),
     }
+    if version == VERSION:
+        result["verifier"] = str(models.get("verifier") or "")
+    return result
 
 
 def backup_path(path: Path, reserved: set[Path]) -> Path:
@@ -609,7 +633,14 @@ def _plan_profile(
     return True
 
 
-def build_install_plan(target: Path, *, force: bool = False, explorer_model: str | None = None, reviewer_model: str | None = None) -> Plan:
+def build_install_plan(
+    target: Path,
+    *,
+    force: bool = False,
+    explorer_model: str | None = None,
+    reviewer_model: str | None = None,
+    verifier_model: str | None = None,
+) -> Plan:
     target = target.resolve()
     if not target.exists() or not target.is_dir():
         raise InstallError(f"target directory does not exist: {target}")
@@ -619,8 +650,10 @@ def build_install_plan(target: Path, *, force: bool = False, explorer_model: str
 
     explorer_default, explorer_effort = bundled_profile_info("explorer.toml")
     reviewer_default, reviewer_effort = bundled_profile_info("reviewer.toml")
+    verifier_default, verifier_effort = bundled_profile_info("verifier.toml")
     explorer_model = explorer_model or prior_models.get("explorer") or explorer_default
     reviewer_model = reviewer_model or prior_models.get("reviewer") or reviewer_default
+    verifier_model = verifier_model or prior_models.get("verifier") or verifier_default
 
     plan = Plan(target)
     agents_path, agents_content, agents_detail = desired_agents_md(target)
@@ -674,7 +707,30 @@ def build_install_plan(target: Path, *, force: bool = False, explorer_model: str
         else:
             plan.steps.append(Step("unchanged", legacy_path, "legacy repo_explorer profile retained because explorer migration is blocked", expected_before=legacy_old))
 
+    prior_version = state_version(prior_state) if isinstance(prior_state, dict) else None
+    if prior_version == LEGACY_VERSION:
+        reviewer_path = target / ".codex" / "agents" / "reviewer.toml"
+        reviewer_old = read_bytes(reviewer_path)
+        if reviewer_old is not None:
+            expected_reviewer = set_profile_model(legacy_profile("reviewer.toml"), prior_models["reviewer"]).encode()
+            if not is_foundry_managed(reviewer_old.decode("utf-8", errors="replace")):
+                plan.steps.append(Step("conflict", reviewer_path, "Foundry v1 reviewer.toml is no longer Foundry-managed; refusing automatic upgrade", expected_before=reviewer_old))
+            elif reviewer_old != expected_reviewer:
+                plan.steps.append(Step("conflict", reviewer_path, "Foundry v1 reviewer.toml has drifted; refusing automatic upgrade", expected_before=reviewer_old))
+    if prior_version == PREVIOUS_VERSION:
+        for filename, key in (("explorer.toml", "explorer"), ("reviewer.toml", "reviewer")):
+            path = target / ".codex" / "agents" / filename
+            old = read_bytes(path)
+            if old is None:
+                continue
+            expected = set_profile_model(previous_profile(filename), prior_models[key]).encode()
+            if not is_foundry_managed(old.decode("utf-8", errors="replace")):
+                plan.steps.append(Step("conflict", path, f"Foundry v2 {filename} is no longer Foundry-managed; refusing automatic upgrade", expected_before=old))
+            elif old != expected:
+                plan.steps.append(Step("conflict", path, f"Foundry v2 {filename} has drifted; refusing automatic upgrade", expected_before=old))
+
     _plan_profile(plan, target, "reviewer.toml", reviewer_model, force=force, reserved=reserved)
+    _plan_profile(plan, target, "verifier.toml", verifier_model, force=force, reserved=reserved)
 
     prior_added = bool(prior_state.get("concurrency_added")) if isinstance(prior_state, dict) else False
     concurrency_added = prior_added or concurrency_added_now
@@ -685,7 +741,7 @@ def build_install_plan(target: Path, *, force: bool = False, explorer_model: str
         "source_revision": source_revision(),
         "runtime_sha256": runtime_sha256(),
     }
-    selected_models = {"explorer": explorer_model, "reviewer": reviewer_model}
+    selected_models = {"explorer": explorer_model, "reviewer": reviewer_model, "verifier": verifier_model}
     state = {
         "version": VERSION,
         "managed_agents": CURRENT_MANAGED_AGENTS,
@@ -705,6 +761,7 @@ def build_install_plan(target: Path, *, force: bool = False, explorer_model: str
             "roles": {
                 "explorer": {"model": explorer_model, "reasoning_effort": explorer_effort},
                 "reviewer": {"model": reviewer_model, "reasoning_effort": reviewer_effort},
+                "verifier": {"model": verifier_model, "reasoning_effort": verifier_effort},
             },
             "concurrency_added": concurrency_added,
             "config_created": config_created,
@@ -719,10 +776,13 @@ def build_uninstall_plan(target: Path) -> Plan:
     target = target.resolve()
     if not target.exists() or not target.is_dir():
         raise InstallError(f"target directory does not exist: {target}")
-    reject_managed_symlink_paths(target, include_explorer=False)
+    reject_managed_symlink_paths(target, profile_names=())
     state = read_state(target, required=True)
     assert state is not None
     schema_version = state_version(state)
+    managed_for_version = state.get("managed_agents")
+    assert isinstance(managed_for_version, list)
+    reject_managed_symlink_paths(target, profile_names=tuple(str(x) for x in managed_for_version))
     plan = Plan(target)
     agents_path, desired_agents, detail = desired_agents_md_without_foundry(target)
     plan.steps.append(step_for_content(agents_path, desired_agents, detail, unchanged_detail="Foundry managed block already absent"))
@@ -736,6 +796,7 @@ def build_uninstall_plan(target: Path) -> Plan:
         "explorer.toml": "explorer",
         "repo_explorer.toml": "explorer",
         "reviewer.toml": "reviewer",
+        "verifier.toml": "verifier",
     }
     for filename in managed:
         path = target / ".codex" / "agents" / filename
@@ -747,7 +808,7 @@ def build_uninstall_plan(target: Path) -> Plan:
             plan.steps.append(Step("conflict", path, "profile is no longer Foundry-managed; refusing to delete", expected_before=old))
             continue
         expected_model = str(models.get(model_keys[filename]) or bundled_profile_model(filename))
-        template = legacy_profile(filename) if schema_version == LEGACY_VERSION else default_profile(filename)
+        template = lifecycle_profile(schema_version, filename)
         expected = set_profile_model(template, expected_model).encode()
         if old != expected:
             plan.steps.append(Step("conflict", path, "Foundry-managed profile has drifted; refusing to delete modified content", expected_before=old))
@@ -770,9 +831,16 @@ def _check_precondition(step: Step) -> None:
 def apply_plan(plan: Plan) -> None:
     if plan.blocked:
         raise InstallError("plan contains conflicts; nothing was written")
-    current_explorer = plan.target / ".codex" / "agents" / "explorer.toml"
-    include_explorer = any(step.path == current_explorer for step in plan.steps)
-    reject_managed_symlink_paths(plan.target, include_explorer=include_explorer)
+    agents_dir = plan.target / ".codex" / "agents"
+    known_profile_names = set().union(*MANAGED_AGENTS_BY_VERSION.values())
+    planned_profile_names = sorted(
+        {
+            step.path.name
+            for step in plan.steps
+            if step.path.parent == agents_dir and step.path.name in known_profile_names
+        }
+    )
+    reject_managed_symlink_paths(plan.target, profile_names=tuple(planned_profile_names))
     mutating = [s for s in plan.steps if s.mutates]
     snapshots: dict[Path, tuple[bytes | None, int | None]] = {
         s.path: (read_bytes(s.path), file_mode(s.path)) for s in mutating
@@ -787,7 +855,7 @@ def apply_plan(plan: Plan) -> None:
     applied: list[Step] = []
     try:
         for step in mutating:
-            reject_managed_symlink_paths(plan.target, include_explorer=include_explorer)
+            reject_managed_symlink_paths(plan.target, profile_names=tuple(planned_profile_names))
             _check_precondition(step)
             if step.action in {"create", "update", "backup"}:
                 if step.content is None:
@@ -829,7 +897,7 @@ def print_plan(plan: Plan, *, label: str) -> None:
     roles = plan.metadata.get("roles")
     if isinstance(roles, dict):
         print("Selected agents:")
-        for role in ("explorer", "reviewer"):
+        for role in ("explorer", "reviewer", "verifier"):
             info = roles.get(role)
             if isinstance(info, dict):
                 print(f"- {role}: {info.get('model')} / {info.get('reasoning_effort')}")
@@ -849,11 +917,12 @@ def main() -> int:
     parser.add_argument("--uninstall", action="store_true", help="remove Foundry-managed runtime state")
     parser.add_argument("--explorer-model", help="override explorer model; preserved in Foundry state")
     parser.add_argument("--reviewer-model", help="override reviewer model; preserved in Foundry state")
+    parser.add_argument("--verifier-model", help="override verifier model; preserved in Foundry state")
     args = parser.parse_args()
     target = Path(args.target)
     try:
         if args.uninstall:
-            if args.force or args.explorer_model or args.reviewer_model:
+            if args.force or args.explorer_model or args.reviewer_model or args.verifier_model:
                 raise InstallError("--uninstall cannot be combined with --force or model overrides")
             plan = build_uninstall_plan(target)
         else:
@@ -862,6 +931,7 @@ def main() -> int:
                 force=args.force,
                 explorer_model=args.explorer_model,
                 reviewer_model=args.reviewer_model,
+                verifier_model=args.verifier_model,
             )
     except InstallError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
