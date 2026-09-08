@@ -78,6 +78,9 @@ class CLITests(unittest.TestCase):
             self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
             self.assertIn("unchanged AGENTS.md: managed block already current", check.stdout)
             self.assertNotIn("unchanged AGENTS.md: update managed Foundry block", check.stdout)
+            applied = self.run_cli(root)
+            self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+            self.assertNotIn("Start a new Codex session", applied.stdout)
 
     def test_uninstall_check_and_apply(self):
         with tempfile.TemporaryDirectory() as td:
