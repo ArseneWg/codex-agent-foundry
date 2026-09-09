@@ -22,8 +22,18 @@
       "expected": {"explorer": false, "reviewer": true, "worker": true, "verifier": false, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
     },
     {
+      "id": "underspecified-worker-mission",
+      "description": "A request says to have Worker fix an issue, but current task state does not establish write scope, exclusive ownership, acceptance criteria, or expected validation. Root must not spawn an underspecified writer or ask the user for checklist formatting; keep implementation with Root until those safety-critical details become known.",
+      "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": false, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": false, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
+    },
+    {
       "id": "noisy-verification",
       "description": "Large tests or logs can run independently and should not pollute Root context.",
+      "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": true, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
+    },
+    {
+      "id": "underspecified-verifier-mission",
+      "description": "A request only says to have Verifier verify it, while current task state already establishes the exact command, cwd, validation baseline, artifact/log policy, log path, and stop condition. Root should fill those details into a natural-language mission before spawning instead of asking the user to provide a template.",
       "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": true, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
     },
     {

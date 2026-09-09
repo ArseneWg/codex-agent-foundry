@@ -49,6 +49,18 @@ The default Verifier is `gpt-5.6-luna` / `low`. Spawn persistent Foundry agents 
 - Explorer and Reviewer are behaviorally no-write. Verifier is source-preserving: normal transient build/test artifacts, caches, and designated logs are allowed, but source/project configuration/user content must not be intentionally modified.
 - These are behavioral contracts, not independent filesystem sandboxes; hard isolation comes from parent session/runtime permissions.
 
+## Mission preflight
+
+Before `spawn_agent`, Root performs a lightweight role-specific semantic preflight. This is not a required JSON/schema or fixed message format.
+
+- Fill missing details from already-known task state instead of asking the user merely to satisfy a checklist.
+- Do not invent unknown ownership, commands, baselines, acceptance criteria, or validation scope.
+- If a safety-critical detail still cannot be determined, keep that work with Root until the mission is bounded enough to delegate.
+- Explorer requires goal, scope, evidence needed, and stop condition.
+- Reviewer requires review target/baseline, scope, materiality focus, and stop condition; its profile already owns the normal finding format.
+- Worker requires goal, write scope plus exclusive ownership, constraints, acceptance criteria, expected validation, and stop condition.
+- Verifier requires exact command, cwd, validation baseline, artifact/log policy including log path, and stop condition; its machine-result protocol remains a role-level invariant rather than repeated mission boilerplate.
+
 ## Lifecycle safety
 
 - v1 `repo_explorer` migration and v1 uninstall remain supported with frozen v1 fixtures.
@@ -60,4 +72,4 @@ The default Verifier is `gpt-5.6-luna` / `low`. Spawn persistent Foundry agents 
 
 For removal, run `scripts/install.py <target> --uninstall --check` before `--uninstall`.
 
-Read `references/design.md` when changing runtime behavior, role identity, model routing, history policy, verification-state ownership, verification-result integrity, migration semantics, or installer safety guarantees.
+Read `references/design.md` when changing runtime behavior, role identity, model routing, history policy, mission preflight, verification-state ownership, verification-result integrity, migration semantics, or installer safety guarantees.

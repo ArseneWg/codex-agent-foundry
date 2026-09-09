@@ -37,32 +37,15 @@ Client compatibility is part of this rule: if an installed Codex release fails t
 
 ### Machine-verifiable verification results
 
-Verifier must preserve the exact validation command's real exit status before running any logging, timing, formatting, or follow-up command. PASS/FAIL is derived from that captured status, never inferred from log prose.
+Verifier must mechanically preserve the exact validation command's real exit status before logging, timing, formatting, cleanup, or summary work can replace it. Pipelines or shell sequences must use failure-preserving semantics. The detailed wrapper belongs to the persistent Verifier role profile rather than each individual mission.
 
-On POSIX, use a wrapper equivalent to:
-
-```bash
-bash -c '
-  log=$1
-  shift
-  "$@" >"$log" 2>&1
-  rc=$?
-  if [ "$rc" -eq 0 ]; then status=PASS; else status=FAIL; fi
-  printf "\nFOUNDRY_RESULT_V1 exit_code=%s status=%s\n" "$rc" "$status" >>"$log"
-  printf "FOUNDRY_RESULT_V1 exit_code=%s status=%s log=%s\n" "$rc" "$status" "$log"
-  exit "$rc"
-' foundry-verifier "$LOG" command arg...
-```
-
-When the exact validation itself needs a pipeline or shell sequence, pass `bash -o pipefail -e -c '...'` as the wrapped command. Do not put `tee`, `|| true`, a trailing `echo`, a timer, or another pipeline outside the status-preserving wrapper where it could replace the validation exit code. On non-POSIX platforms use the native equivalent: capture the validation status immediately, append the same footer, and return the same process status.
-
-The final `FOUNDRY_RESULT_V1` line in the log is authoritative machine evidence. The canonical successful footer is `FOUNDRY_RESULT_V1 exit_code=0 status=PASS`. A delegated PASS is valid only when the wrapper/tool result is exit 0 and the final footer says exactly `exit_code=0 status=PASS`. Any nonzero status is FAIL. Missing, malformed, conflicting, or mismatched footer/status evidence is INDETERMINATE and must never be reported or accepted as PASS.
+The final `FOUNDRY_RESULT_V1` line in the log is authoritative machine evidence. The canonical successful footer is `FOUNDRY_RESULT_V1 exit_code=0 status=PASS`. Any nonzero status is FAIL. Missing, malformed, conflicting, or mismatched footer/tool status is INDETERMINATE and must never be reported or accepted as PASS.
 
 Verifier must return the literal final footer and log path. Before Root uses a delegated PASS as completion evidence, Root must read the referenced log's final `FOUNDRY_RESULT_V1` line and confirm `exit_code=0 status=PASS`. Earlier footer-like text from the validation command is not authoritative; only the final wrapper-appended footer counts.
 
 ### Evidence reuse and session lifecycle
 
-Prefer targeted reads and searches over broad transcript-sized output. Reuse evidence from unchanged files instead of repeatedly rereading the same content. Use narrow `rg`, bounded `sed`, `tail`, or focused diagnostics before full-file/full-log output when those are sufficient.
+Prefer targeted reads and searches over broad transcript-sized output. Reuse evidence from unchanged files instead of repeatedly rereading the same content. Use narrow searches and bounded diagnostics before full-file/full-log output when those are sufficient.
 
 After a major milestone or repeated context compaction, Root should checkpoint the durable task state: goal, decisions, changed files, validation results, blockers, and next action. If stale tool history dominates the session, prefer continuing from that checkpoint in a fresh session instead of preserving an ever-growing transcript.
 
@@ -79,18 +62,18 @@ Default to one-level fan-out from the root and fan-in back to the root. Spawn th
 
 Subagents must not spawn additional subagents by default. Only the root may explicitly authorize nested delegation for a specific mission when the extra coordination is justified.
 
-### Mission contract
+### Mission contract: role-specific preflight
 
-Give each subagent only the context needed for its task. Every delegated mission should define at least:
+Before every `spawn_agent`, Root performs a lightweight semantic preflight for the selected role. This is a checklist for mission completeness, not a required JSON/schema or fixed serialization format. Keep missions in natural language and include extra context only when it materially helps the child.
 
-- goal;
-- scope and ownership;
-- known facts and constraints;
-- evidence or acceptance criteria;
-- expected return;
-- stop condition.
+If a required detail is missing from the user's wording but is already established by the task state, Root should fill it in before spawning rather than interrupt the task to ask the user for checklist formatting. Do not invent unknown ownership, commands, baselines, or acceptance criteria. If a safety-critical detail still cannot be determined, keep that work with Root until the mission is bounded enough to delegate.
 
-Verifier missions that depend on repository contents must also identify the validation baseline and whether transient validation artifacts/logs are allowed.
+Required mission content is role-specific because delegation risk is asymmetric:
+
+- **Explorer:** goal; scope; evidence needed; stop condition.
+- **Reviewer:** review target or baseline; scope; materiality focus; stop condition. The role profile already owns the finding format, so do not restate it unless the task needs a special output.
+- **Worker:** goal; write scope and exclusive ownership; constraints; acceptance criteria; expected validation; stop condition.
+- **Verifier:** exact command; cwd; validation baseline; artifact/log policy including the log path; stop condition. The machine-result/exit-code protocol is a persistent Verifier invariant and does not need to be recopied into every mission.
 
 A subagent should return evidence and results, not silently broaden its mission.
 

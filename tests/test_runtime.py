@@ -68,6 +68,12 @@ class RuntimeContractTests(unittest.TestCase):
             "fresh session",
             "one source-code writer per checkout",
             "Subagents must not spawn additional subagents by default",
+            "Mission contract: role-specific preflight",
+            "lightweight semantic preflight",
+            "not a required JSON/schema",
+            "write scope and exclusive ownership",
+            "artifact/log policy including the log path",
+            "keep that work with Root",
             "Agent agreement is not evidence of correctness",
         ]
         for text in required:
@@ -158,7 +164,9 @@ exit "$rc"
             "single-short-validation",
             "unclear-cross-module-bug",
             "bounded-implementation",
+            "underspecified-worker-mission",
             "noisy-verification",
+            "underspecified-verifier-mission",
             "verification-while-root-edits",
             "verifier-exit-status-integrity",
             "polling-device-state",
@@ -176,6 +184,9 @@ exit "$rc"
         scenarios = {s["id"]: s for s in payload["scenarios"]}
         self.assertFalse(scenarios["single-short-validation"]["expected"]["verifier"])
         self.assertTrue(scenarios["noisy-verification"]["expected"]["verifier"])
+        self.assertFalse(scenarios["underspecified-worker-mission"]["expected"]["worker"])
+        self.assertTrue(scenarios["underspecified-verifier-mission"]["expected"]["verifier"])
+        self.assertTrue(scenarios["underspecified-verifier-mission"]["expected"]["minimal_history"])
         self.assertTrue(scenarios["verification-while-root-edits"]["expected"]["verifier"])
         self.assertTrue(scenarios["verification-while-root-edits"]["expected"]["worktrees"])
         self.assertFalse(scenarios["verification-while-root-edits"]["expected"]["parallel_writers_same_checkout"])
