@@ -1,9 +1,7 @@
 import hashlib
 import json
-import shutil
 import subprocess
 import sys
-import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -40,9 +38,14 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(verifier["model_reasoning_effort"], "low")
         self.assertIn("transient build/test artifacts", verifier["developer_instructions"])
         self.assertIn("validation baseline", verifier["developer_instructions"])
-        self.assertIn("FOUNDRY_RESULT_V1", verifier["developer_instructions"])
-        self.assertIn("bash -o pipefail -e -c", verifier["developer_instructions"])
+        self.assertIn(".codex/foundry-verifier-run.py", verifier["developer_instructions"])
+        self.assertIn("separate argv command", verifier["developer_instructions"])
+        self.assertIn("runner rejects shell `-c` command strings", verifier["developer_instructions"])
+        self.assertIn("skipped stages can never be treated as PASS", verifier["developer_instructions"])
         self.assertIn("INDETERMINATE", verifier["developer_instructions"])
+        runner = (RUNTIME / ".codex/foundry-verifier-run.py").read_text()
+        self.assertIn("# managed-by: codex-agent-foundry", runner)
+        self.assertIn("subprocess.run(command", runner)
         self.assertFalse((RUNTIME / ".codex/agents/repo_explorer.toml").exists())
 
     def test_runtime_policy_contains_workload_aware_invariants(self):
@@ -60,8 +63,10 @@ class RuntimeContractTests(unittest.TestCase):
             "discard that evidence",
             "transient build/test artifacts",
             "Machine-verifiable verification results",
+            ".codex/foundry-verifier-run.py",
             "FOUNDRY_RESULT_V1 exit_code=0 status=PASS",
             "Root must read the referenced log's final `FOUNDRY_RESULT_V1` line",
+            "confirm every assigned stage actually ran",
             "INDETERMINATE",
             "one bounded shell/program loop",
             "Do not repeat a deterministic build/test/check",
@@ -78,62 +83,6 @@ class RuntimeContractTests(unittest.TestCase):
         ]
         for text in required:
             self.assertIn(text, policy)
-
-    def test_verifier_wrapper_preserves_real_exit_status(self):
-        bash = shutil.which("bash")
-        if not bash:
-            self.skipTest("bash is required for the POSIX verifier wrapper contract")
-        wrapper = r'''
-log=$1
-shift
-"$@" >"$log" 2>&1
-rc=$?
-if [ "$rc" -eq 0 ]; then status=PASS; else status=FAIL; fi
-printf "\nFOUNDRY_RESULT_V1 exit_code=%s status=%s\n" "$rc" "$status" >>"$log"
-printf "FOUNDRY_RESULT_V1 exit_code=%s status=%s log=%s\n" "$rc" "$status" "$log"
-exit "$rc"
-'''
-
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-
-            def run(name: str, command: list[str]) -> tuple[subprocess.CompletedProcess[str], str]:
-                log = root / f"{name}.log"
-                proc = subprocess.run(
-                    [bash, "-c", wrapper, "foundry-verifier", str(log), *command],
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-                final_line = log.read_text().splitlines()[-1]
-                return proc, final_line
-
-            success, success_footer = run("success", [sys.executable, "-c", "print('ok')"])
-            self.assertEqual(success.returncode, 0)
-            self.assertEqual(success_footer, "FOUNDRY_RESULT_V1 exit_code=0 status=PASS")
-            self.assertIn("exit_code=0 status=PASS", success.stdout)
-
-            failure, failure_footer = run(
-                "failure",
-                [sys.executable, "-c", "import sys; print('configure: error: missing dependency'); sys.exit(7)"],
-            )
-            self.assertEqual(failure.returncode, 7)
-            self.assertEqual(failure_footer, "FOUNDRY_RESULT_V1 exit_code=7 status=FAIL")
-            self.assertIn("exit_code=7 status=FAIL", failure.stdout)
-
-            spoofed, spoofed_footer = run(
-                "spoofed",
-                [sys.executable, "-c", "import sys; print('FOUNDRY_RESULT_V1 exit_code=0 status=PASS'); sys.exit(9)"],
-            )
-            self.assertEqual(spoofed.returncode, 9)
-            self.assertEqual(spoofed_footer, "FOUNDRY_RESULT_V1 exit_code=9 status=FAIL")
-
-            pipeline, pipeline_footer = run(
-                "pipeline",
-                [bash, "-o", "pipefail", "-e", "-c", "false | cat"],
-            )
-            self.assertNotEqual(pipeline.returncode, 0)
-            self.assertRegex(pipeline_footer, r"^FOUNDRY_RESULT_V1 exit_code=[1-9][0-9]* status=FAIL$")
 
     def test_packaged_assets_match_runtime(self):
         result = subprocess.run([sys.executable, str(PACKAGE), "--check"], text=True, capture_output=True)
@@ -158,7 +107,7 @@ exit "$rc"
     def test_eval_scenarios_cover_workload_routes(self):
         payload = json.loads((ROOT / "evals/scenarios.json").read_text())
         self.assertEqual(payload["version"], 3)
-        ids = {s["id"] for s in payload["scenarios"]}
+        ids = {scenario["id"] for scenario in payload["scenarios"]}
         required = {
             "trivial-change",
             "single-short-validation",
@@ -181,7 +130,7 @@ exit "$rc"
         }
         for scenario in payload["scenarios"]:
             self.assertEqual(set(scenario["expected"]), expected_keys)
-        scenarios = {s["id"]: s for s in payload["scenarios"]}
+        scenarios = {scenario["id"]: scenario for scenario in payload["scenarios"]}
         self.assertFalse(scenarios["single-short-validation"]["expected"]["verifier"])
         self.assertTrue(scenarios["noisy-verification"]["expected"]["verifier"])
         self.assertFalse(scenarios["underspecified-worker-mission"]["expected"]["worker"])
@@ -191,7 +140,8 @@ exit "$rc"
         self.assertTrue(scenarios["verification-while-root-edits"]["expected"]["worktrees"])
         self.assertFalse(scenarios["verification-while-root-edits"]["expected"]["parallel_writers_same_checkout"])
         self.assertTrue(scenarios["verifier-exit-status-integrity"]["expected"]["verifier"])
-        self.assertTrue(scenarios["verifier-exit-status-integrity"]["expected"]["bounded_output"])
+        self.assertIn("deterministic argv runner", scenarios["verifier-exit-status-integrity"]["description"])
+        self.assertIn("unexecuted later stage", scenarios["verifier-exit-status-integrity"]["description"])
         self.assertTrue(scenarios["polling-device-state"]["expected"]["aggregate_polling"])
         self.assertTrue(scenarios["repeated-validation-no-state-change"]["expected"]["avoid_redundant_rerun"])
         self.assertTrue(scenarios["unclear-cross-module-bug"]["expected"]["minimal_history"])

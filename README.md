@@ -28,7 +28,7 @@ Use one writer per checkout. Root does not edit alongside a Worker that owns it.
 
 Spawn persistent agents by role and omit redundant model/effort overrides. Prefer `fork_turns="none"` for self-contained missions when supported and reliable; otherwise use the smallest useful history. Keep raw logs in files, aggregate mechanical polling, avoid unjustified reruns, and checkpoint long sessions.
 
-A delegated PASS requires matching tool exit zero and the final wrapper-generated `FOUNDRY_RESULT_V1 exit_code=0 status=PASS` footer. Missing or conflicting evidence is INDETERMINATE. Root reads the referenced footer and checks the assigned scope and final source state; a footer alone does not prove every intended stage ran. Agent agreement is not correctness evidence.
+For source-dependent validation, each required stage is one argv command executed by `.codex/foundry-verifier-run.py`. The runner rejects shell `-c` command strings so required stages cannot be hidden inside `&&`, `||`, pipelines, or trailing summary commands. Multi-stage validation runs stages separately and stops on the first FAIL/INDETERMINATE. A stage PASS requires tool exit zero and final `FOUNDRY_RESULT_V1 exit_code=0 status=PASS`; overall PASS requires every assigned stage to PASS. Root reads each referenced stage footer, confirms every assigned stage ran, and checks the final source state. Agent agreement is not correctness evidence.
 
 ## Install, update, remove
 
@@ -43,7 +43,7 @@ python3 "$SKILL/scripts/install.py" /path/to/repo
 python3 "$SKILL/scripts/verify.py" /path/to/repo
 ```
 
-Inspect the plan before applying: it lists selected models/effort and all changes, conflicts, backups, and state updates. The target receives a managed `AGENTS.md` block, `.codex/config.toml`, three `.codex/agents/*.toml` profiles, and `.codex/.agent-foundry.json`. Start a **new Codex session** in the target afterward.
+Inspect the plan before applying: it lists selected models/effort and all changes, conflicts, backups, and state updates. The target receives a managed `AGENTS.md` block, `.codex/config.toml`, three `.codex/agents/*.toml` profiles, `.codex/foundry-verifier-run.py`, and `.codex/.agent-foundry.json`. Start a **new Codex session** in the target afterward.
 
 Model overrides are role-local:
 
@@ -61,17 +61,19 @@ python3 "$SKILL/scripts/install.py" /path/to/repo --uninstall --check
 python3 "$SKILL/scripts/install.py" /path/to/repo --uninstall
 ```
 
-Foreign same-name profiles block installation unless explicit `--force` authorizes backup and replacement. Model overrides are supported customization; inspect other managed-file edits before any update. Uninstall refuses drifted profiles. See [lifecycle details](.agents/skills/install-codex-agent-foundry/references/design.md) for guarantees and boundaries.
+Foreign same-name profiles block installation unless explicit `--force` authorizes backup and replacement. Current v3 state records SHA-256 fingerprints for managed profiles and the Verifier runner; manual drift blocks update and uninstall instead of being overwritten or deleted. `--force` may back up and replace a drifted managed path only when explicitly authorized. A v3 installation created before these fingerprints existed is conservative: a file that already matches the new desired template can be adopted automatically, but a differing managed file blocks until reviewed and explicitly forced because old-template drift cannot be distinguished safely from a user edit.
+
+Installer changes to `.codex/config.toml` are checked semantically: after parsing, only `agents.max_concurrent_threads_per_session` may differ. Table-like text inside multiline strings is not treated as configuration. See [lifecycle details](.agents/skills/install-codex-agent-foundry/references/design.md) for guarantees and boundaries.
 
 ## Upgrades and provenance
 
 v1 `repo_explorer` migrates to `explorer`; v2 upgrades add Verifier. Historical v1/v2 profiles are frozen and hash-pinned for ownership/drift checks and uninstall. Drift blocks migration; foreign profiles are not silently claimed. Never edit legacy fixtures to make an upgrade pass.
 
-State v3 records roles/models, managed concurrency/config ownership, runtime version, `source_revision`, and `runtime_sha256`. Revision is recorded only for a provably clean Foundry checkout with matching runtime/package; a copied Skill records `unknown`, not the target repository's commit. The content hash is authoritative when revision is unknown.
+State v3 records roles/models, managed concurrency/config ownership, runtime version, `source_revision`, `runtime_sha256`, and `managed_sha256` fingerprints for current managed profiles plus the Verifier runner. Revision is recorded only for a provably clean Foundry checkout with matching runtime/package; a copied Skill records `unknown`, not the target repository's commit. Runtime and managed-content hashes provide deterministic content evidence when revision is unavailable.
 
 ## Verification boundaries
 
-`verify.py` checks managed paths, state, TOML, expected profiles, and drift. `--runtime-check` adds CLI presence/version and reports configured models. Neither proves account access, new-session loading, actual child model selection, or a successful project build.
+`verify.py` checks managed paths, state, TOML, expected profiles/runner, and drift. `--runtime-check` adds CLI presence/version and reports configured models. Neither proves account access, new-session loading, actual child model selection, mission compliance, or a successful project build.
 
 [Forward evals](evals/README.md) test real routing, ownership, mission completion, and evidence handling. CI is necessary but does not replace those tests.
 
@@ -79,7 +81,7 @@ State v3 records roles/models, managed concurrency/config ownership, runtime ver
 
 | Path | Purpose |
 | --- | --- |
-| `runtime/` | Installed policy and role source of truth. |
+| `runtime/` | Installed policy, profiles, and deterministic Verifier runner source of truth. |
 | `.agents/skills/install-codex-agent-foundry/` | Maintenance workflow, scripts, frozen legacy fixtures, and generated `assets/project/`. |
 | `evals/` | Behavioral scenarios and evaluation guidance. |
 | `scripts/`, `tests/`, `.github/workflows/` | Packaging, regression tests, and CI. |
@@ -94,6 +96,6 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q .agents/skills/install-codex-agent-foundry/scripts scripts tests
 ```
 
-CI runs Python 3.11/3.12/3.13 and a Python 3.10 version-guard check. Tests include frozen fixtures, lifecycle safety, runtime contracts, and bounded prompt sizes. Live-model behavior still requires forward evaluation.
+CI runs Python 3.11/3.12/3.13 and a Python 3.10 version-guard check. Tests include frozen fixtures, lifecycle safety, TOML semantic preservation, managed-content drift, deterministic Verifier execution, runtime contracts, and bounded prompt sizes. Live-model behavior still requires forward evaluation.
 
 Official references: [Subagents](https://developers.openai.com/codex/subagents) · [AGENTS.md](https://developers.openai.com/codex/guides/agents-md) · [Skills](https://developers.openai.com/codex/skills) · [Review commands](https://developers.openai.com/codex/cli/slash-commands)

@@ -28,7 +28,7 @@ Root 每次派发前按角色检查 Mission。使用自然语言，不要求 JSO
 
 按 `agent_type` 选择长期角色，不重复传模型/推理参数。自包含任务在客户端支持且可靠时优先 `fork_turns="none"`，否则只传最小必要历史。大输出留文件，机械轮询合并执行，不无故重复验证，长会话保留 checkpoint。
 
-派发结果为 PASS，必须同时有工具退出码 0 和最后由 wrapper 生成的 `FOUNDRY_RESULT_V1 exit_code=0 status=PASS`。证据缺失或矛盾只能是 INDETERMINATE。Root 必须读取对应日志并确认验证范围和最终源码状态；footer 不能单独证明所有预期步骤都执行了。Agent 结论一致不等于正确。
+源码相关验证按**阶段**执行：每个必需阶段是一个 argv 命令，由 `.codex/foundry-verifier-run.py` 独立执行。runner 会拒绝 shell `-c` 命令字符串，避免把必需阶段藏在 `&&`、`||`、pipeline 或尾部 summary 中。多阶段任务逐阶段执行，出现第一个 FAIL/INDETERMINATE 就停止。单阶段 PASS 必须同时满足工具退出码 0 与最终 `FOUNDRY_RESULT_V1 exit_code=0 status=PASS`；整体 PASS 要求所有指定阶段都 PASS。Root 必须读取每个阶段的日志 footer，并确认所有指定阶段真实执行。Agent 结论一致不等于正确。
 
 ## 安装、更新、卸载
 
@@ -43,7 +43,7 @@ python3 "$SKILL/scripts/install.py" /path/to/repo
 python3 "$SKILL/scripts/verify.py" /path/to/repo
 ```
 
-先检查计划中的模型、推理强度、所有改动、备份及冲突，再应用。目标仓库安装 AGENTS 管理区块、`.codex/config.toml`、三个 `.codex/agents/*.toml` 及 `.codex/.agent-foundry.json`。完成后在目标仓库启动**新 Codex 会话**。
+先检查计划中的模型、推理强度、所有改动、备份及冲突，再应用。目标仓库安装 AGENTS 管理区块、`.codex/config.toml`、三个 `.codex/agents/*.toml`、`.codex/foundry-verifier-run.py` 和 `.codex/.agent-foundry.json`。完成后在目标仓库启动**新 Codex 会话**。
 
 模型覆盖只影响对应角色：
 
@@ -61,17 +61,21 @@ python3 "$SKILL/scripts/install.py" /path/to/repo --uninstall --check
 python3 "$SKILL/scripts/install.py" /path/to/repo --uninstall
 ```
 
-外部同名 profile 默认阻塞安装；只有明确授权 `--force` 才备份后替换。模型参数是受支持的定制方式；其他 managed 文件的手工修改需在更新前检查。卸载会拒绝删除已漂移的 profile。边界见 [生命周期说明](.agents/skills/install-codex-agent-foundry/references/design.md)。
+外部同名 profile 默认阻塞安装；只有明确授权 `--force` 才备份后替换。当前 v3 state 会记录三个 profile 与 Verifier runner 的 SHA-256 指纹；手工漂移会阻塞更新和卸载，不再被静默覆盖或删除。只有明确授权时，`--force` 才会备份后替换漂移的托管路径。
+
+对于指纹机制引入前创建的 v3 安装：如果文件已经等于新模板，可以直接纳入新指纹；如果内容不同，则升级会先阻塞，因为 Installer 无法安全区分“旧模板差异”和“用户手改”，检查后需显式 `--force` 才建立新基线。
+
+`.codex/config.toml` 的编辑还会做解析后的语义检查：修改前后只允许 `agents.max_concurrent_threads_per_session` 发生预期变化；多行字符串里的 `[agents]` 或类似文本不会被当成真实配置。边界见 [生命周期说明](.agents/skills/install-codex-agent-foundry/references/design.md)。
 
 ## 迁移与来源
 
 v1 的 `repo_explorer` 迁为 `explorer`；v2 升级增加 Verifier。v1/v2 历史模板保持原样，并以固定哈希保护，供 ownership、drift 和卸载检查使用。漂移阻塞迁移，不能修改历史模板来“修好”测试。
 
-State v3 记录角色/模型、并发配置归属、runtime 版本、`source_revision` 和 `runtime_sha256`。只有干净的 Foundry checkout 且 runtime 与发布副本一致时才记录 revision；复制安装的 Skill 记为 `unknown`，不会误记目标仓库提交。无法证明 Git 来源时，以内容哈希为准。
+State v3 记录角色/模型、并发配置归属、runtime 版本、`source_revision`、`runtime_sha256`，以及当前三个 profile 和 Verifier runner 的 `managed_sha256`。只有干净的 Foundry checkout 且 runtime 与发布副本一致时才记录 revision；复制安装的 Skill 记为 `unknown`，不会误记目标仓库提交。无法证明 Git 来源时，以内容哈希和托管文件指纹为准。
 
 ## 验证边界
 
-`verify.py` 检查路径、state、TOML、profile 和漂移；`--runtime-check` 额外检查 Codex CLI/version 并报告配置模型。它们不证明账户可用性、新会话加载成功、实际 child 模型，或目标项目构建通过。
+`verify.py` 检查路径、state、TOML、profile、Verifier runner 和漂移；`--runtime-check` 额外检查 Codex CLI/version 并报告配置模型。它们不证明账户可用性、新会话加载成功、实际 child 模型、Mission 是否遵守，或目标项目构建通过。
 
 [Forward eval](evals/README.md) 才检查实际角色派发、ownership、Mission 和验证证据。CI 不能替代真实模型验证。
 
@@ -79,7 +83,7 @@ State v3 记录角色/模型、并发配置归属、runtime 版本、`source_rev
 
 | 路径 | 用途 |
 | --- | --- |
-| `runtime/` | 安装到项目的规范和角色配置源。 |
+| `runtime/` | 安装到项目的规范、角色配置和确定性 Verifier runner 源。 |
 | `.agents/skills/install-codex-agent-foundry/` | 维护流程、脚本、历史模板、生成的 `assets/project/`。 |
 | `evals/` | 行为场景和评估方法。 |
 | `scripts/`、`tests/`、`.github/workflows/` | 打包、回归测试、CI。 |
@@ -94,6 +98,6 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q .agents/skills/install-codex-agent-foundry/scripts scripts tests
 ```
 
-CI 覆盖 Python 3.11/3.12/3.13，另用 3.10 检查版本保护。静态契约、提示词大小和脚本测试不代表真实 Agent 行为已经验证。
+CI 覆盖 Python 3.11/3.12/3.13，另用 3.10 检查版本保护。测试覆盖历史 fixture、生命周期安全、TOML 语义保持、托管内容漂移、确定性 Verifier 执行、静态契约和提示词大小；这些仍不等于真实 Agent 行为已经验证。
 
 官方参考：[Subagents](https://developers.openai.com/codex/subagents) · [AGENTS.md](https://developers.openai.com/codex/guides/agents-md) · [Skills](https://developers.openai.com/codex/skills) · [Review](https://developers.openai.com/codex/cli/slash-commands)

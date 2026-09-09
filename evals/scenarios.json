@@ -33,12 +33,12 @@
     },
     {
       "id": "underspecified-verifier-mission",
-      "description": "A request only says to have Verifier verify it, while current task state already establishes the exact command, cwd, validation baseline, artifact/log policy, log path, and stop condition. Root should fill those details into a natural-language mission before spawning instead of asking the user to provide a template.",
+      "description": "A request only says to have Verifier verify it, while current task state already establishes the exact command/stages, cwd, validation baseline, artifact/log policy, log paths, and stop condition. Root should fill those details into a natural-language mission before spawning instead of asking the user to provide a template.",
       "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": true, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
     },
     {
       "id": "verifier-exit-status-integrity",
-      "description": "A noisy validation command exits nonzero while output is redirected or shell wrappers could otherwise mask the failure; Verifier must preserve the real exit status and never report PASS without matching machine evidence.",
+      "description": "A source-dependent validation has multiple required stages and an early stage fails. Verifier must execute stages separately through the deterministic argv runner, reject shell -c compound validation, stop after the failure, preserve its machine result, and never claim an unexecuted later stage or overall PASS.",
       "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": true, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
     },
     {
