@@ -18,14 +18,20 @@ sys.modules[spec.name] = mod
 spec.loader.exec_module(mod)
 
 
-def seed_v1(root: Path, *, explorer_model: str = "gpt-5.6-terra", drift: bool = False) -> None:
+def seed_v1(
+    root: Path,
+    *,
+    explorer_model: str = "gpt-5.6-terra",
+    reviewer_model: str = "gpt-5.6",
+    drift: bool = False,
+) -> None:
     agents = root / ".codex/agents"
     agents.mkdir(parents=True)
     legacy = mod.set_profile_model(mod.legacy_explorer_profile(), explorer_model)
     if drift:
         legacy += "\n# user drift\n"
     (agents / "repo_explorer.toml").write_text(legacy)
-    (agents / "reviewer.toml").write_text(mod.legacy_profile("reviewer.toml"))
+    (agents / "reviewer.toml").write_text(mod.set_profile_model(mod.legacy_profile("reviewer.toml"), reviewer_model))
     (root / ".codex/config.toml").write_text("[agents]\nmax_concurrent_threads_per_session = 4\n")
     (root / "AGENTS.md").write_text(f"{mod.START}\nlegacy policy\n{mod.END}\n")
     state = {
@@ -34,7 +40,7 @@ def seed_v1(root: Path, *, explorer_model: str = "gpt-5.6-terra", drift: bool = 
         "agents_md_markers": [mod.START, mod.END],
         "concurrency_added": True,
         "config_created": True,
-        "models": {"repo_explorer": explorer_model, "reviewer": "gpt-5.6"},
+        "models": {"repo_explorer": explorer_model, "reviewer": reviewer_model},
     }
     (root / ".codex/.agent-foundry.json").write_text(json.dumps(state))
 
@@ -75,6 +81,17 @@ class ExplorerMigrationTests(unittest.TestCase):
             self.assertEqual(state["models"]["verifier"], "gpt-5.6-luna")
             self.assertTrue((root / ".codex/agents/verifier.toml").exists())
 
+    def test_v2_default_reviewer_model_migrates_to_current_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            seed_v2(root)
+            plan = mod.build_install_plan(root)
+            self.assertFalse(plan.blocked)
+            mod.apply_plan(plan)
+            state = json.loads((root / ".codex/.agent-foundry.json").read_text())
+            self.assertEqual(state["models"]["reviewer"], "gpt-5.6-terra")
+            self.assertIn('model = "gpt-5.6-terra"', (root / ".codex/agents/reviewer.toml").read_text())
+
     def test_v2_drift_blocks_v3_upgrade(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -114,6 +131,18 @@ class ExplorerMigrationTests(unittest.TestCase):
             state = json.loads((root / ".codex/.agent-foundry.json").read_text())
             self.assertEqual(state["version"], 3)
             self.assertEqual(state["models"]["explorer"], "gpt-custom-explorer")
+            self.assertEqual(state["models"]["reviewer"], "gpt-5.6-terra")
+
+    def test_v1_custom_reviewer_model_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            seed_v1(root, reviewer_model="gpt-reviewer-v1-custom")
+            plan = mod.build_install_plan(root)
+            self.assertFalse(plan.blocked)
+            mod.apply_plan(plan)
+            state = json.loads((root / ".codex/.agent-foundry.json").read_text())
+            self.assertEqual(state["models"]["reviewer"], "gpt-reviewer-v1-custom")
+            self.assertIn('model = "gpt-reviewer-v1-custom"', (root / ".codex/agents/reviewer.toml").read_text())
 
     def test_migration_allows_explicit_model_change_without_marking_legacy_drift(self):
         with tempfile.TemporaryDirectory() as td:

@@ -57,6 +57,7 @@ MODEL_KEYS_BY_VERSION = {
     PREVIOUS_VERSION: {"explorer", "reviewer"},
     VERSION: {"explorer", "reviewer", "verifier"},
 }
+OBSOLETE_REVIEWER_MODEL = "gpt-5.6"
 
 Action = Literal["create", "update", "delete", "backup", "unchanged", "conflict"]
 
@@ -651,8 +652,11 @@ def build_install_plan(
     explorer_default, explorer_effort = bundled_profile_info("explorer.toml")
     reviewer_default, reviewer_effort = bundled_profile_info("reviewer.toml")
     verifier_default, verifier_effort = bundled_profile_info("verifier.toml")
+    requested_reviewer_model = reviewer_model
     explorer_model = explorer_model or prior_models.get("explorer") or explorer_default
-    reviewer_model = reviewer_model or prior_models.get("reviewer") or reviewer_default
+    reviewer_model = requested_reviewer_model or prior_models.get("reviewer") or reviewer_default
+    if requested_reviewer_model is None and reviewer_model == OBSOLETE_REVIEWER_MODEL:
+        reviewer_model = reviewer_default
     verifier_model = verifier_model or prior_models.get("verifier") or verifier_default
 
     plan = Plan(target)

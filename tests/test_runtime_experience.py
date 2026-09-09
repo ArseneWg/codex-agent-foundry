@@ -30,6 +30,7 @@ class RuntimeExperienceTests(unittest.TestCase):
             self.assertEqual(state["runtime_version"], "3")
             self.assertEqual(state["managed_agents"], ["explorer.toml", "reviewer.toml", "verifier.toml"])
             self.assertEqual(set(state["models"]), {"explorer", "reviewer", "verifier"})
+            self.assertEqual(state["models"]["reviewer"], "gpt-5.6-terra")
             self.assertEqual(state["models"]["verifier"], "gpt-5.6-luna")
             self.assertEqual(state["runtime_sha256"], mod.runtime_sha256())
             self.assertRegex(state["runtime_sha256"], r"^[0-9a-f]{64}$")
@@ -66,7 +67,7 @@ class RuntimeExperienceTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(INSTALL), td, "--check"], text=True, capture_output=True, check=False)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("explorer: gpt-5.6-terra / medium", result.stdout)
-            self.assertIn("reviewer: gpt-5.6 / high", result.stdout)
+            self.assertIn("reviewer: gpt-5.6-terra / high", result.stdout)
             self.assertIn("verifier: gpt-5.6-luna / low", result.stdout)
 
     def test_verifier_model_override_is_role_local(self):
@@ -77,10 +78,10 @@ class RuntimeExperienceTests(unittest.TestCase):
             state = json.loads((root / ".codex/.agent-foundry.json").read_text())
             self.assertEqual(state["models"]["verifier"], verifier_override)
             self.assertEqual(state["models"]["explorer"], "gpt-5.6-terra")
-            self.assertEqual(state["models"]["reviewer"], "gpt-5.6")
+            self.assertEqual(state["models"]["reviewer"], "gpt-5.6-terra")
             self.assertIn(f'model = "{verifier_override}"', (root / ".codex/agents/verifier.toml").read_text())
             self.assertIn('model = "gpt-5.6-terra"', (root / ".codex/agents/explorer.toml").read_text())
-            self.assertIn('model = "gpt-5.6"', (root / ".codex/agents/reviewer.toml").read_text())
+            self.assertIn('model = "gpt-5.6-terra"', (root / ".codex/agents/reviewer.toml").read_text())
 
     def test_apply_prints_new_session_hint(self):
         with tempfile.TemporaryDirectory() as td:
@@ -104,7 +105,7 @@ class RuntimeExperienceTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(VERIFY), str(root), "--runtime-check"], text=True, capture_output=True, env=env, check=False)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("explorer: gpt-5.6-terra / medium", result.stdout)
-            self.assertIn("reviewer: gpt-5.6 / high", result.stdout)
+            self.assertIn("reviewer: gpt-5.6-terra / high", result.stdout)
             self.assertIn("verifier: gpt-5.6-luna / low", result.stdout)
             self.assertIn("--verifier-model gpt-5.6-terra", result.stdout)
             self.assertIn("resolved child model/effort: not verified", result.stdout)
