@@ -27,6 +27,11 @@
       "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": true, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
     },
     {
+      "id": "verifier-exit-status-integrity",
+      "description": "A noisy validation command exits nonzero while output is redirected or shell wrappers could otherwise mask the failure; Verifier must preserve the real exit status and never report PASS without matching machine evidence.",
+      "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": true, "worktrees": false, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
+    },
+    {
       "id": "verification-while-root-edits",
       "description": "A long source-dependent verification should run while Root still needs to edit relevant source.",
       "expected": {"explorer": false, "reviewer": false, "worker": false, "verifier": true, "worktrees": true, "parallel_writers_same_checkout": false, "minimal_history": true, "bounded_output": true, "aggregate_polling": false, "avoid_redundant_rerun": false}
