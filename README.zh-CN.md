@@ -60,8 +60,8 @@ Planner
           ┌──────────────┼──────────────┐
           ▼               ▼              ▼
       explorer         verifier       reviewer
-  Terra / medium      Luna / low    GPT-5.6 / high
-      不写              不写             不写
+  Terra / medium      Luna / low     Terra / high
+      不写            source-preserving    不写
           │               │              │
           └───────────────┴──────────────┘
                           ▼
@@ -200,7 +200,7 @@ grep / symbol lookup
 ```text
 explorer → gpt-5.6-terra / medium
 verifier → gpt-5.6-luna / low
-reviewer → gpt-5.6 / high
+reviewer → gpt-5.6-terra / high
 ```
 
 而不是用全局：
@@ -212,11 +212,13 @@ default_subagent_model = "..."
 
 把 `worker` 和其他未 pin 的 Subagent 一起降档。
 
+Reviewer 使用 Terra / high，是因为历史默认 `gpt-5.6` 在当前 ChatGPT-account Codex child 上并不是可用的具体模型。v1/v2 的历史 fixture 仍保留原值用于 ownership/drift 判断，但升级时会把这个旧默认迁到 Terra；用户显式设置的其他 Reviewer 模型会继续保留。
+
 ### 3）行为比泛化 built-in 更稳定
 
 Foundry 明确要求证据导向、不改代码、不递归 delegation。这样 Root 收到的是 investigation evidence，而不是第二个偷偷开始实现的 writer。
 
-需要明确一个边界：当前 Codex 的 agent role 不会把 `sandbox_mode` 应用成独立的 child 文件系统 sandbox。role 可以固定 model / reasoning effort / instructions / features / skills 等受支持字段，但 spawned child 的 permission/sandbox profile 会继承当前 parent session。因此 Explorer / Verifier / Reviewer 的“不写文件”是**行为与编排契约**，不是独立 sandbox 强制。如果需要硬隔离，应在 parent session/runtime 层设置权限。
+需要明确一个边界：当前 Codex 的 agent role 不会把 `sandbox_mode` 应用成独立的 child 文件系统 sandbox。role 可以固定 model / reasoning effort / instructions / features / skills 等受支持字段，但 spawned child 的 permission/sandbox profile 会继承当前 parent session。Explorer / Reviewer 的“不写文件”和 Verifier 的 source-preserving 都是**行为与编排契约**，不是独立 sandbox 强制。如果需要硬隔离，应在 parent session/runtime 层设置权限。
 
 ---
 
@@ -242,7 +244,7 @@ Terra / medium
 
 ```text
 静态配置验证
-→ explorer.toml = Terra / medium
+→ profile 中的 requested model / effort
 
 真实运行验证
 → child 最终 resolved model / effort
@@ -262,8 +264,6 @@ resolved child model/effort: not verified
 ```
 
 Foundry 宁可承认“目前不可观测”，也不把静态配置包装成真实 runtime 保证。
-
-另外，本次迁移**不同时把 medium 改成 low**。角色身份迁移和 reasoning 质量调整是两个变量；如果未来 eval 证明 Terra / low 足够，再单独修改。
 
 ---
 
@@ -298,7 +298,7 @@ Root 消化 findings
 修复 / 验证 / 收口
 ```
 
-它在行为上要求不修改文件，并固定强模型/high reasoning，只看 material correctness / regression / security / state / tests 问题，不自己修 finding，也不继续 spawn。
+它在行为上要求不修改文件，并固定 `gpt-5.6-terra / high`，只看 material correctness / regression / security / state / tests 问题，不自己修 finding，也不继续 spawn。
 
 真正价值是：
 
@@ -346,20 +346,30 @@ Worker 只有在 `scope / ownership / behavior / constraints / acceptance / vali
 你的审计显示，大量成本来自 shell/read/wait 循环、长会话、build/log 输出、device/sysfs 轮询和 fork 历史继承；测试调用本身并不是主要数量来源。因此 v3 的 Verifier 只负责：
 
 ```text
-收到明确 command / cwd / stop condition
+收到明确 command / cwd / validation baseline / stop condition
 → 执行、等待、聚合机械轮询
 → 大日志尽量留文件
 → 返回 PASS/FAIL + exit code + 精简错误 + log path
 → STOP
 ```
 
-单个短小确定性命令仍由 Root 直接跑。Verifier 默认 `gpt-5.6-luna / low`，只在“长/noisy/重复/可独立运行”时值得 spawn；失败不自己 debug、不改代码，证据交回 Root。若某个 Codex release 不允许 child 使用 Luna，可用 `--verifier-model gpt-5.6-terra` 覆盖，不能为了省成本全局降低所有 Subagent。
+单个短小确定性命令仍由 Root 直接跑。Verifier 默认 `gpt-5.6-luna / low`，只在“长/noisy/重复/可独立运行”时值得 spawn；失败不自己 debug、不改 source/project config，证据交回 Root。正常 build/test 产生的临时 artifact/cache/log 允许存在。
+
+Verifier 通过 `agent_type="verifier"` 选择角色，通常不再额外传 `model="gpt-5.6-luna"`。某些 MultiAgent V2 版本会拒绝 Luna 作为显式 spawn-time model override，但 custom role 仍可能正常应用 Luna。如果 role 本身也起不来，本次由 Root 直接验证，或者显式重配 `--verifier-model gpt-5.6-terra`；不做静默 fallback。
 
 ### 最小历史 + 输出预算
 
 自包含的 Explorer / Verifier / Reviewer mission，在客户端可靠支持时优先 `fork_turns = "none"`；确实依赖历史时只给最小 last-N；full history 是例外。如果特定 release 的 no-history task delivery 有 bug，就退到最小可用 last-N，不默认回到全部历史。
 
 机械轮询应尽量合并进一次有界 shell/program loop；大 build/test/log 输出留在文件，只回传证据和路径；同一 deterministic validation 在 relevant state 没变化时不应重复执行。
+
+### 验证状态 ownership
+
+Verifier 的证据只对它实际检查的 source state 有效：
+
+- 同 checkout 验证时，Root 必须保持相关 source 稳定直到 Verifier 返回；
+- Root 还要继续改相关 source 时，Verifier 应切到独立 worktree/snapshot；
+- 验证过程中相关 source 发生变化，则旧 evidence 作废，最终状态必须重新验证。
 
 完成大 milestone 或多次 compaction 后，Root 应 checkpoint：目标、决策、改动文件、验证结果、blocker、下一步。如果旧 tool history 已明显主导上下文，优先新 session 从 checkpoint 继续。
 
@@ -396,7 +406,7 @@ User → Root → Planner → Architect → Worker → Reviewer → Root
 
 ## 10. 更深层原则：Read 并发便宜，Write 并发昂贵
 
-行为上 no-write 的 Agent 可以独立收集证据，不应修改共享 source state；主要成本只是 Root 最后汇总。这里的 no-write 是编排契约，不是独立 per-role sandbox 保证。
+Source-preserving Agent 可以并行收集证据，但其证据必须绑定到稳定的 relevant source state。这里的限制是编排契约，不是独立 per-role sandbox 保证。
 
 Write-heavy Agent 则额外需要处理：
 
@@ -410,15 +420,14 @@ merge / integration
 因此：
 
 - 一个 checkout 同时只有一个 source-code writer；
-- read-only Agent 可以并行；
+- source-preserving Agent 只有在相关 source 稳定时才能并行；
 - substantial parallel writes 使用不同 worktree；
+- Root 需要继续编辑时，长验证也应切独立 worktree/snapshot；
 - Root 最终负责 integration。
-
-这也是为什么长期 Agent 名额优先给 Explorer / Reviewer 这类只读 specialist。
 
 ---
 
-## 11. 什么情况下才新增第三个长期 Agent？
+## 11. 什么情况下才新增长期 Agent？
 
 最好满足大部分条件：
 
@@ -466,8 +475,14 @@ merge / integration
 边界清楚的机械实现
 → worker 可实现 → reviewer → Root 验证
 
-大型 / noisy verification
-→ 临时 verifier
+单个短小确定性验证
+→ Root 直接执行
+
+大型 / noisy / 重复性验证
+→ verifier + minimal history + bounded output
+
+Root 继续修改相关 source 的长验证
+→ 独立 worktree/snapshot
 
 两个 substantial write 要并行
 → 分开 worktree
@@ -485,7 +500,8 @@ codex-agent-foundry/
 │       ├── config.toml
 │       └── agents/
 │           ├── explorer.toml      # 覆盖 Codex built-in explorer
-│           └── reviewer.toml
+│           ├── reviewer.toml
+│           └── verifier.toml
 ├── evals/                         # policy contract
 ├── .agents/skills/
 │   └── install-codex-agent-foundry/
@@ -539,7 +555,7 @@ PLAN 顶部会显示：
 ```text
 Selected agents:
 - explorer: gpt-5.6-terra / medium
-- reviewer: gpt-5.6 / high
+- reviewer: gpt-5.6-terra / high
 - verifier: gpt-5.6-luna / low
 ```
 
@@ -579,7 +595,7 @@ python3 .../install.py /path/to/repo \
   --verifier-model <model>
 ```
 
-选择会写进 state，后续 update 会保留，除非显式换模型。
+选择会写进 state，后续 update 会保留，除非显式换模型。历史默认 Reviewer `gpt-5.6` 是唯一的兼容迁移例外：如果它来自旧 state 且本次没有显式指定 Reviewer model，会自动升级为当前默认 Terra；显式的其他旧 Reviewer override 继续保留。
 
 ---
 
@@ -609,7 +625,7 @@ Installer 会：
 - 如果没有匹配的 v1 state，只有带 Foundry 管理标记的 orphan `repo_explorer.toml` 才会阻塞人工检查；用户自己的同名 legacy 文件会保留且不影响 v2；
 - v1 uninstall 仍然支持，并使用 Installer Skill 内冻结的 v1 profile fixture 校验旧文件。
 
-已有 Foundry v2 的项目不需要角色 rename：Installer 会用冻结的 v2 Explorer/Reviewer fixture 校验 ownership 和 drift，保留两个模型 override，再新增 `verifier.toml`。如果 v2 profile 已被修改则整个升级阻塞；v2 uninstall 仍支持，而且不会认领一个 foreign `verifier.toml`。
+已有 Foundry v2 的项目不需要角色 rename：Installer 会用冻结的 v2 Explorer/Reviewer fixture 校验 ownership 和 drift，保留自定义模型 override，把历史默认 Reviewer `gpt-5.6` 迁到 `gpt-5.6-terra`，再新增 `verifier.toml`。如果 v2 profile 已被修改则整个升级阻塞；v2 uninstall 仍支持，而且不会认领一个 foreign `verifier.toml`。
 
 所以升级前仍然先运行：
 
@@ -628,7 +644,7 @@ python3 .../install.py /path/to/repo --check
   "managed_agents": ["explorer.toml", "reviewer.toml", "verifier.toml"],
   "models": {
     "explorer": "gpt-5.6-terra",
-    "reviewer": "gpt-5.6",
+    "reviewer": "gpt-5.6-terra",
     "verifier": "gpt-5.6-luna"
   },
   "source_revision": "...",
@@ -661,13 +677,13 @@ python3 .../verify.py /path/to/repo --runtime-check
 - `codex` 是否在 PATH；
 - `codex --version`；
 - 本地 config/profile 严格 TOML 解析；
-- Explorer / Reviewer 配置中的 model + reasoning effort。
+- Explorer / Reviewer / Verifier 配置中的 model + reasoning effort。
 
 但明确**不会声称**已经验证：
 
 - 账户一定能用这些模型；
 - 新 Codex session 已成功加载全部项目配置；
-- 实际 spawned Explorer child 最终 resolved 到配置中的 model/effort。
+- 实际 spawned child 最终 resolved 到配置中的 model/effort。
 
 最后一项只有在 Codex 提供稳定可观测的 spawned-thread runtime metadata 后，才能可靠做成硬验证。
 
@@ -680,7 +696,7 @@ python3 .../install.py /path/to/repo --uninstall --check
 python3 .../install.py /path/to/repo --uninstall
 ```
 
-卸载只处理 Foundry-owned 内容，保留无关项目配置；managed profile 如果 drift，会拒绝删除。v1 state 的卸载也继续支持。
+卸载只处理 Foundry-owned 内容，保留无关项目配置；managed profile 如果 drift，会拒绝删除。v1/v2 state 的卸载也继续支持。
 
 ---
 

@@ -38,7 +38,7 @@ The baseline therefore keeps only roles that are frequent, narrow, reusable, and
           ┌──────────────┼──────────────┐
           ▼               ▼              ▼
       explorer         verifier       reviewer
-  Terra / medium      Luna / low    GPT-5.6 / high
+  Terra / medium      Luna / low     Terra / high
        no-edit          no-edit         no-edit
           │               │              │
           └───────────────┴──────────────┘
@@ -113,7 +113,7 @@ This gives Foundry three useful properties:
 2. **Cost control.** Exploration is intentionally pinned to a cheaper/faster model profile than a potentially expensive root session.
 3. **Behavioral stability.** A no-edit, evidence-oriented contract is explicit in project instructions instead of being left entirely to a generic built-in default.
 
-Current Codex does **not** apply `sandbox_mode` from an agent role as a separate child filesystem sandbox. Role application pins supported fields such as model, reasoning effort, instructions, features, and skills, while spawned children inherit the live parent permission/sandbox profile. Explorer, Verifier, and Reviewer are therefore **behaviorally no-write**, not independently sandbox-enforced. If hard filesystem isolation is required, enforce it at the parent session/runtime level.
+Current Codex does **not** apply `sandbox_mode` from an agent role as a separate child filesystem sandbox. Role application pins supported fields such as model, reasoning effort, instructions, features, and skills, while spawned children inherit the live parent permission/sandbox profile. Explorer, Verifier, and Reviewer are therefore behavioral contracts, not independently sandbox-enforced roles. If hard filesystem isolation is required, enforce it at the parent session/runtime level.
 
 ### Requested model versus actual resolved child model
 
@@ -149,7 +149,7 @@ reviewer performs a cold no-edit review
 Root reconciles findings, fixes if needed, validates
 ```
 
-The reviewer is instructed not to edit files and uses a strong/high-reasoning profile, focuses on material correctness/regression/security/state/test risks, does not fix its own findings, and returns evidence to Root.
+The reviewer is instructed not to edit files and uses `gpt-5.6-terra / high`, focuses on material correctness/regression/security/state/test risks, does not fix its own findings, and returns evidence to Root.
 
 Its value is not “another agent is smarter.” Its value is **context separation from the writer**.
 
@@ -190,7 +190,7 @@ exact command/scope
 
 A single short deterministic command still stays with Root. Verifier is for long-running, noisy, repetitive, or independently running work where context isolation and a low-cost model offset spawn overhead. It never edits code or broadens a failure into debugging; failure evidence returns to Root.
 
-Default profile: `gpt-5.6-luna / low`. If an installed Codex release rejects Luna for child agents, `--verifier-model gpt-5.6-terra` is the compatibility fallback. Foundry does not globally set a cheap default for all subagents because that could also downgrade `worker`.
+Default profile: `gpt-5.6-luna / low`. Spawn it by role and let `verifier.toml` own the configured model. If the configured role itself cannot spawn on a particular Codex release, Root handles validation for that session or the installation can be explicitly changed with `--verifier-model gpt-5.6-terra`; Foundry does not silently switch models.
 
 ## Minimal history, bounded output, fewer model-mediated loops
 
@@ -295,7 +295,7 @@ parallel substantial writes
 │       └── agents/
 │           ├── explorer.toml      # overrides Codex built-in explorer
 │           ├── reviewer.toml
-│           └── verifier.toml        # low-cost bounded verification executor
+│           └── verifier.toml      # low-cost bounded verification executor
 ├── evals/                         # orchestration contract scenarios
 ├── .agents/skills/
 │   └── install-codex-agent-foundry/
@@ -335,7 +335,7 @@ python3 scripts/package_runtime.py
 python3 scripts/package_runtime.py --check
 ```
 
-CI fails on packaging drift or a stale packaged legacy `repo_explorer.toml`.
+CI fails on packaging drift or frozen lifecycle fixture drift.
 
 ## Requirements
 
@@ -356,7 +356,7 @@ The plan shows the effective role selections before writing:
 ```text
 Selected agents:
 - explorer: gpt-5.6-terra / medium
-- reviewer: gpt-5.6 / high
+- reviewer: gpt-5.6-terra / high
 - verifier: gpt-5.6-luna / low
 ```
 
@@ -418,7 +418,7 @@ The migration is ownership-safe:
 - an orphan Foundry-managed `repo_explorer.toml` without matching v1 state blocks for manual inspection, while a foreign file using that old name is left alone;
 - v1 uninstall remains supported using frozen v1 profile fixtures carried by the Installer Skill.
 
-Foundry v2 already uses `explorer.toml` + `reviewer.toml`. A v2 → v3 upgrade validates both profiles against frozen v2 lifecycle fixtures, preserves their model overrides, and then adds `verifier.toml`. Drift blocks the plan instead of being overwritten. v2 uninstall remains supported, and a foreign `verifier.toml` is not claimed by v2 state.
+Foundry v2 already uses `explorer.toml` + `reviewer.toml`. A v2 → v3 upgrade validates both profiles against frozen v2 lifecycle fixtures, preserves custom model overrides, migrates the obsolete historical Reviewer default `gpt-5.6` to the current `gpt-5.6-terra`, and then adds `verifier.toml`. Drift blocks the plan instead of being overwritten. The same obsolete-default migration also applies when upgrading a v1 install; an explicit non-default Reviewer model remains preserved. v2 uninstall remains supported, and a foreign `verifier.toml` is not claimed by v2 state.
 
 Preview the migration with the same normal dry-run command. A blocked migration writes nothing.
 
@@ -431,7 +431,7 @@ State schema/runtime version is now v3. v1 and v2 lifecycle/uninstall remain sup
   "managed_agents": ["explorer.toml", "reviewer.toml", "verifier.toml"],
   "models": {
     "explorer": "gpt-5.6-terra",
-    "reviewer": "gpt-5.6",
+    "reviewer": "gpt-5.6-terra",
     "verifier": "gpt-5.6-luna"
   },
   "source_revision": "...",
@@ -468,7 +468,7 @@ It explicitly **does not** claim:
 
 - account-level model availability;
 - that a new Codex session loaded the files successfully;
-- that an actually spawned Explorer child resolved to the requested model/effort.
+- that an actually spawned child resolved to the requested model/effort.
 
 Those require observable runtime/session metadata from Codex rather than static configuration alone.
 
@@ -497,7 +497,7 @@ CI runs the full suite on Python 3.11, 3.12, and 3.13, plus a Python 3.10 smoke 
 ## Current Codex assumptions
 
 - Project role files can lock role-level model and reasoning effort; current Codex exposes these as settings that cannot be changed for that role.
-- Spawned role permissions/sandboxing are inherited from the live parent session; Foundry's no-write specialists are behavioral contracts, not separate sandbox profiles.
+- Spawned role permissions/sandboxing are inherited from the live parent session; Foundry's specialist write restrictions are behavioral contracts, not separate sandbox profiles.
 - built-in subagents include `default`, `worker`, and `explorer`;
 - project custom agents are discovered from `.codex/agents/`;
 - a custom agent with the same name as a built-in role takes precedence;
