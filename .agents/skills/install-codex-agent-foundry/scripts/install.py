@@ -12,6 +12,7 @@ if sys.version_info < (3, 11):
     raise SystemExit(2)
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -35,18 +36,17 @@ MANAGED = "# managed-by: codex-agent-foundry"
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 ASSET_ROOT = SKILL_ROOT / "assets" / "project"
 LEGACY_ROOT = SKILL_ROOT / "assets" / "legacy"
-LEGACY_ASSET_ROOT = LEGACY_ROOT / "v1"
 RUNTIME_FILES = (
     "AGENTS.fragment.md",
     ".codex/config.toml",
     ".codex/agents/explorer.toml",
     ".codex/agents/reviewer.toml",
     ".codex/agents/verifier.toml",
+    ".codex/foundry-verifier-run.py",
 )
 V1_MANAGED_AGENTS = ["repo_explorer.toml", "reviewer.toml"]
 V2_MANAGED_AGENTS = ["explorer.toml", "reviewer.toml"]
 CURRENT_MANAGED_AGENTS = ["explorer.toml", "reviewer.toml", "verifier.toml"]
-LEGACY_MANAGED_AGENTS = V1_MANAGED_AGENTS
 MANAGED_AGENTS_BY_VERSION = {
     LEGACY_VERSION: V1_MANAGED_AGENTS,
     PREVIOUS_VERSION: V2_MANAGED_AGENTS,
@@ -57,6 +57,13 @@ MODEL_KEYS_BY_VERSION = {
     PREVIOUS_VERSION: {"explorer", "reviewer"},
     VERSION: {"explorer", "reviewer", "verifier"},
 }
+VERIFIER_RUNNER = ".codex/foundry-verifier-run.py"
+CURRENT_MANAGED_PATHS = [
+    ".codex/agents/explorer.toml",
+    ".codex/agents/reviewer.toml",
+    ".codex/agents/verifier.toml",
+    VERIFIER_RUNNER,
+]
 OBSOLETE_REVIEWER_MODEL = "gpt-5.6"
 
 Action = Literal["create", "update", "delete", "backup", "unchanged", "conflict"]
@@ -84,7 +91,7 @@ class Plan:
 
     @property
     def blocked(self) -> bool:
-        return any(s.action == "conflict" for s in self.steps)
+        return any(step.action == "conflict" for step in self.steps)
 
 
 class InstallError(RuntimeError):
@@ -114,7 +121,27 @@ def read_text(path: Path) -> str:
         raise InstallError(f"{path}: managed text file is not valid UTF-8") from exc
 
 
-def reject_managed_symlink_paths(target: Path, *, profile_names: list[str] | tuple[str, ...] | None = None) -> None:
+def file_mode(path: Path) -> int | None:
+    try:
+        return path.stat().st_mode & 0o7777
+    except FileNotFoundError:
+        return None
+
+
+def sha256(data: bytes | None) -> str | None:
+    return hashlib.sha256(data).hexdigest() if data is not None else None
+
+
+def is_foundry_managed(content: str) -> bool:
+    return any(line.strip() == MANAGED for line in content.splitlines()[:5])
+
+
+def reject_managed_symlink_paths(
+    target: Path,
+    *,
+    profile_names: list[str] | tuple[str, ...] | None = None,
+    include_runner: bool = True,
+) -> None:
     directory_paths = {".codex", ".codex/agents"}
     paths = [
         ".codex",
@@ -123,6 +150,8 @@ def reject_managed_symlink_paths(target: Path, *, profile_names: list[str] | tup
         ".codex/config.toml",
         ".codex/.agent-foundry.json",
     ]
+    if include_runner:
+        paths.append(VERIFIER_RUNNER)
     for name in CURRENT_MANAGED_AGENTS if profile_names is None else profile_names:
         paths.append(f".codex/agents/{name}")
     for rel in paths:
@@ -134,17 +163,6 @@ def reject_managed_symlink_paths(target: Path, *, profile_names: list[str] | tup
                 raise InstallError(f"{path}: expected a directory")
             if rel not in directory_paths and not path.is_file():
                 raise InstallError(f"{path}: expected a regular file")
-
-
-def file_mode(path: Path) -> int | None:
-    try:
-        return path.stat().st_mode & 0o7777
-    except FileNotFoundError:
-        return None
-
-
-def sha256(data: bytes | None) -> str | None:
-    return hashlib.sha256(data).hexdigest() if data is not None else None
 
 
 def runtime_sha256() -> str:
@@ -163,16 +181,12 @@ def runtime_sha256() -> str:
 def source_revision() -> str:
     repo_root = SKILL_ROOT.parents[2]
     runtime_root = repo_root / "runtime"
-
-    # A copied project Skill often lives inside the target repository's own .git tree.
-    # Never mistake that target commit for the Foundry Runtime source revision.
     try:
         for rel in RUNTIME_FILES:
             if (runtime_root / rel).read_bytes() != (ASSET_ROOT / rel).read_bytes():
                 return "unknown"
     except OSError:
         return "unknown"
-
     try:
         top = subprocess.run(
             ["git", "-C", str(repo_root), "rev-parse", "--show-toplevel"],
@@ -183,7 +197,6 @@ def source_revision() -> str:
         )
         if top.returncode != 0 or Path(top.stdout.strip()).resolve() != repo_root.resolve():
             return "unknown"
-
         clean = subprocess.run(
             [
                 "git",
@@ -201,7 +214,6 @@ def source_revision() -> str:
         )
         if clean.returncode != 0:
             return "unknown"
-
         result = subprocess.run(
             ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
             text=True,
@@ -297,11 +309,84 @@ def desired_agents_md_without_foundry(target: Path) -> tuple[Path, bytes | None,
     return path, new.encode() if new else None, "remove Foundry managed block"
 
 
-def find_agents_section(lines: list[str]) -> tuple[int, int] | None:
-    start = None
-    header = re.compile(r"^\s*\[\s*agents\s*\]\s*(?:#.*)?$")
+def _toml_structural_lines(text: str) -> set[int]:
+    """Return line indexes that begin outside multiline TOML strings."""
+    structural: set[int] = set()
+    mode: Literal["basic", "literal"] | None = None
+    for i, line in enumerate(text.splitlines()):
+        if mode is None:
+            structural.add(i)
+        j = 0
+        while j < len(line):
+            if mode == "basic":
+                if line.startswith('"""', j):
+                    backslashes = 0
+                    k = j - 1
+                    while k >= 0 and line[k] == "\\":
+                        backslashes += 1
+                        k -= 1
+                    if backslashes % 2 == 0:
+                        mode = None
+                        j += 3
+                        continue
+                j += 1
+                continue
+            if mode == "literal":
+                if line.startswith("'''", j):
+                    mode = None
+                    j += 3
+                    continue
+                j += 1
+                continue
+
+            ch = line[j]
+            if ch == "#":
+                break
+            if line.startswith('"""', j):
+                mode = "basic"
+                j += 3
+                continue
+            if line.startswith("'''", j):
+                mode = "literal"
+                j += 3
+                continue
+            if ch == '"':
+                j += 1
+                while j < len(line):
+                    if line[j] == '"':
+                        backslashes = 0
+                        k = j - 1
+                        while k >= 0 and line[k] == "\\":
+                            backslashes += 1
+                            k -= 1
+                        if backslashes % 2 == 0:
+                            j += 1
+                            break
+                    j += 1
+                continue
+            if ch == "'":
+                end = line.find("'", j + 1)
+                j = len(line) if end < 0 else end + 1
+                continue
+            j += 1
+    return structural
+
+
+def _toml_table_lines(text: str) -> tuple[list[str], set[int], re.Pattern[str]]:
+    lines = text.splitlines()
+    structural = _toml_structural_lines(text)
     any_table = re.compile(r"^\s*\[\[?.+\]?\]\s*(?:#.*)?$")
+    return lines, structural, any_table
+
+
+def find_agents_section(text_or_lines: str | list[str]) -> tuple[int, int] | None:
+    text = text_or_lines if isinstance(text_or_lines, str) else "\n".join(text_or_lines)
+    lines, structural, any_table = _toml_table_lines(text)
+    header = re.compile(r"^\s*\[\s*agents\s*\]\s*(?:#.*)?$")
+    start: int | None = None
     for i, line in enumerate(lines):
+        if i not in structural:
+            continue
         if start is None and header.match(line):
             start = i
             continue
@@ -310,61 +395,65 @@ def find_agents_section(lines: list[str]) -> tuple[int, int] | None:
     return (start, len(lines)) if start is not None else None
 
 
+def _first_structural_table(text: str) -> int:
+    lines, structural, any_table = _toml_table_lines(text)
+    return next((i for i, line in enumerate(lines) if i in structural and any_table.match(line)), len(lines))
+
+
 def validate_concurrency_value(path: Path, value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise InstallError(f"{path}: agents.max_concurrent_threads_per_session must be an integer >= 1")
     return value
 
 
+def _parse_toml(path: Path, text: str, *, label: str) -> dict[str, object]:
+    try:
+        parsed = tomllib.loads(text) if text else {}
+    except tomllib.TOMLDecodeError as exc:
+        raise InstallError(f"{path}: {label} TOML is invalid: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise InstallError(f"{path}: {label} TOML root must be a table")
+    return parsed
+
+
 def desired_config(target: Path) -> tuple[Path, bytes, bool, str]:
     path = target / ".codex" / "config.toml"
-    old = read_text(path)
-    if old:
-        try:
-            parsed = tomllib.loads(old)
-        except tomllib.TOMLDecodeError as exc:
-            raise InstallError(f"{path}: existing TOML is invalid: {exc}") from exc
-    else:
-        parsed = {}
+    old_bytes = read_bytes(path)
+    old = old_bytes.decode("utf-8") if old_bytes is not None else ""
+    parsed = _parse_toml(path, old, label="existing")
     agents = parsed.get("agents")
     if agents is not None and not isinstance(agents, dict):
-        raise InstallError(f"{path}: [agents] is not a TOML table")
+        raise InstallError(f"{path}: agents must be a TOML table")
     if isinstance(agents, dict) and "max_concurrent_threads_per_session" in agents:
         validate_concurrency_value(path, agents["max_concurrent_threads_per_session"])
         return path, old.encode(), False, "preserve existing concurrency value"
+
+    if old_bytes is None:
+        bundled = read_text(ASSET_ROOT / ".codex" / "config.toml")
+        bundled_parsed = _parse_toml(path, bundled, label="bundled")
+        expected = copy.deepcopy(parsed)
+        expected.setdefault("agents", {})["max_concurrent_threads_per_session"] = DEFAULT_CONCURRENCY
+        if bundled_parsed != expected:
+            raise InstallError("bundled config does not contain only the expected Foundry concurrency setting")
+        return path, bundled.encode(), True, "create Foundry project config"
+
     lines = old.splitlines()
-    section = find_agents_section(lines)
+    section = find_agents_section(old)
     key_line = f"max_concurrent_threads_per_session = {DEFAULT_CONCURRENCY}"
-    if section is None and isinstance(agents, dict):
-        if re.search(r"(?m)^\s*agents\s*=\s*\{", old):
-            raise InstallError(f"{path}: inline `agents = {{...}}` table cannot be safely merged")
-        first_table = next((i for i, line in enumerate(lines) if re.match(r"^\s*\[", line)), len(lines))
-        lines.insert(first_table, "agents." + key_line)
-        new = "\n".join(lines).rstrip() + "\n"
-        detail = "add missing concurrency setting using existing dotted agents table"
-    elif section is None:
-        if read_bytes(path) is None:
-            bundled = read_text(ASSET_ROOT / ".codex" / "config.toml")
-            try:
-                tomllib.loads(bundled)
-            except tomllib.TOMLDecodeError as exc:
-                raise InstallError(f"bundled config is invalid TOML: {exc}") from exc
-            new = bundled
-            detail = "create Foundry project config"
-        else:
-            first_table = next((i for i, line in enumerate(lines) if re.match(r"^\s*\[", line)), len(lines))
-            lines.insert(first_table, "agents." + key_line)
-            new = "\n".join(lines).rstrip() + "\n"
-            detail = "add missing concurrency setting using dotted key"
-    else:
-        start, _ = section
-        lines.insert(start + 1, key_line)
-        new = "\n".join(lines).rstrip() + "\n"
+    if section is not None:
+        lines.insert(section[0] + 1, key_line)
         detail = "add missing concurrency setting to existing [agents]"
-    try:
-        tomllib.loads(new)
-    except tomllib.TOMLDecodeError as exc:
-        raise InstallError(f"{path}: merged TOML would be invalid: {exc}") from exc
+    else:
+        lines.insert(_first_structural_table(old), "agents." + key_line)
+        detail = "add missing concurrency setting using top-level dotted key"
+    new = "\n".join(lines).rstrip() + "\n"
+    new_parsed = _parse_toml(path, new, label="merged")
+    expected = copy.deepcopy(parsed)
+    expected.setdefault("agents", {})["max_concurrent_threads_per_session"] = DEFAULT_CONCURRENCY
+    if new_parsed != expected:
+        raise InstallError(
+            f"{path}: refusing config edit because parsed content would change beyond the Foundry concurrency setting"
+        )
     return path, new.encode(), True, detail
 
 
@@ -373,44 +462,44 @@ def remove_managed_concurrency(target: Path, state: dict[str, object]) -> tuple[
     old = read_text(path)
     if not old or not bool(state.get("concurrency_added")):
         return path, read_bytes(path), "preserve config; concurrency was not Foundry-managed"
-    try:
-        parsed = tomllib.loads(old)
-    except tomllib.TOMLDecodeError as exc:
-        raise InstallError(f"{path}: existing TOML is invalid: {exc}") from exc
-    value = parsed.get("agents", {}).get("max_concurrent_threads_per_session")
+    parsed = _parse_toml(path, old, label="existing")
+    agents = parsed.get("agents")
+    value = agents.get("max_concurrent_threads_per_session") if isinstance(agents, dict) else None
     if value != DEFAULT_CONCURRENCY:
         return path, old.encode(), "preserve config; managed concurrency value was changed by user"
-    lines = old.splitlines()
-    key_patterns = [
-        re.compile(r"^\s*max_concurrent_threads_per_session\s*=\s*4\s*(?:#.*)?$"),
-        re.compile(r"^\s*agents\.max_concurrent_threads_per_session\s*=\s*4\s*(?:#.*)?$"),
-    ]
-    removed = False
-    out: list[str] = []
-    section = find_agents_section(lines)
+
+    lines, structural, _ = _toml_table_lines(old)
+    section = find_agents_section(old)
+    direct = re.compile(r"^\s*max_concurrent_threads_per_session\s*=\s*4\s*(?:#.*)?$")
+    dotted = re.compile(r"^\s*agents\.max_concurrent_threads_per_session\s*=\s*4\s*(?:#.*)?$")
+    remove_indexes: list[int] = []
     for i, line in enumerate(lines):
-        in_agents = section is not None and section[0] < i < section[1]
-        if (in_agents and key_patterns[0].match(line)) or key_patterns[1].match(line):
-            removed = True
+        if i not in structural:
             continue
-        out.append(line)
-    if not removed:
-        raise InstallError(f"{path}: could not safely locate the Foundry-managed concurrency key")
-    new = "\n".join(out).rstrip()
+        in_agents = section is not None and section[0] < i < section[1]
+        if (in_agents and direct.match(line)) or dotted.match(line):
+            remove_indexes.append(i)
+    if len(remove_indexes) != 1:
+        raise InstallError(f"{path}: could not safely locate exactly one Foundry-managed concurrency key")
+    del lines[remove_indexes[0]]
+    new = "\n".join(lines).rstrip()
+
+    expected = copy.deepcopy(parsed)
+    expected_agents = expected.get("agents")
+    assert isinstance(expected_agents, dict)
+    expected_agents.pop("max_concurrent_threads_per_session", None)
+
     if bool(state.get("config_created")) and new.strip() == "[agents]":
-        new = ""
-    elif new:
+        return path, None, "remove Foundry-created project config"
+    if new:
         new += "\n"
-    try:
-        tomllib.loads(new) if new else {}
-    except tomllib.TOMLDecodeError as exc:
-        raise InstallError(f"{path}: uninstall would produce invalid TOML: {exc}") from exc
-    desired = new.encode() if new else (None if bool(state.get("config_created")) else b"")
+    new_parsed = _parse_toml(path, new, label="uninstall result")
+    if new_parsed != expected:
+        raise InstallError(
+            f"{path}: refusing uninstall edit because parsed content would change beyond the Foundry concurrency setting"
+        )
+    desired = new.encode() if new else b""
     return path, desired, "remove Foundry-managed concurrency setting"
-
-
-def is_foundry_managed(content: str) -> bool:
-    return any(line.strip() == MANAGED for line in content.splitlines()[:5])
 
 
 def default_profile(name: str) -> str:
@@ -459,15 +548,18 @@ def legacy_explorer_profile() -> str:
 
 
 def profile_template(name: str) -> str:
-    if name == "repo_explorer.toml":
-        return legacy_explorer_profile()
-    return default_profile(name)
+    return legacy_explorer_profile() if name == "repo_explorer.toml" else default_profile(name)
 
 
 def set_profile_model(content: str, model: str) -> str:
     if not model.strip():
         raise InstallError("model override must not be empty")
-    new, count = re.subn(r'(?m)^model\s*=\s*"[^"]*"\s*$', f'model = {json.dumps(model)}', content, count=1)
+    new, count = re.subn(
+        r'(?m)^model\s*=\s*"[^"]*"\s*$',
+        f"model = {json.dumps(model)}",
+        content,
+        count=1,
+    )
     if count != 1:
         raise InstallError("bundled profile does not contain exactly one model assignment")
     try:
@@ -500,6 +592,15 @@ def state_version(payload: dict[str, object]) -> int:
     return value
 
 
+def _managed_hashes(payload: dict[str, object] | None) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        return {}
+    value = payload.get("managed_sha256")
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): str(digest) for key, digest in value.items()}
+
+
 def validate_state(path: Path, payload: dict[str, object]) -> None:
     base_required = {"version", "managed_agents", "agents_md_markers", "concurrency_added", "config_created", "models"}
     missing = sorted(base_required - payload.keys())
@@ -510,13 +611,10 @@ def validate_state(path: Path, payload: dict[str, object]) -> None:
     except InstallError as exc:
         raise InstallError(f"{path}: {exc}") from exc
     if version >= PREVIOUS_VERSION:
-        provenance_required = {"runtime_version", "source_revision", "runtime_sha256"}
-        missing = sorted(provenance_required - payload.keys())
+        missing = sorted({"runtime_version", "source_revision", "runtime_sha256"} - payload.keys())
         if missing:
             raise InstallError(f"{path}: Foundry v{version} state is missing provenance fields: {', '.join(missing)}")
-    expected_agents = MANAGED_AGENTS_BY_VERSION[version]
-    expected_model_keys = MODEL_KEYS_BY_VERSION[version]
-    if payload.get("managed_agents") != expected_agents:
+    if payload.get("managed_agents") != MANAGED_AGENTS_BY_VERSION[version]:
         raise InstallError(f"{path}: unexpected managed_agents in Foundry state")
     if payload.get("agents_md_markers") != [START, END]:
         raise InstallError(f"{path}: unexpected AGENTS.md markers in Foundry state")
@@ -524,19 +622,22 @@ def validate_state(path: Path, payload: dict[str, object]) -> None:
         if not isinstance(payload.get(key), bool):
             raise InstallError(f"{path}: state field {key} must be boolean")
     models = payload.get("models")
-    if not isinstance(models, dict) or set(models) != expected_model_keys:
+    if not isinstance(models, dict) or set(models) != MODEL_KEYS_BY_VERSION[version]:
         raise InstallError(f"{path}: state field models has unexpected role keys")
-    if not all(isinstance(v, str) and v.strip() for v in models.values()):
+    if not all(isinstance(value, str) and value.strip() for value in models.values()):
         raise InstallError(f"{path}: state model values must be non-empty strings")
-    if "runtime_version" in payload:
-        runtime_version = payload["runtime_version"]
-        expected_runtime_version = str(version)
-        if not isinstance(runtime_version, str) or runtime_version != expected_runtime_version:
-            raise InstallError(f"{path}: runtime_version must be {expected_runtime_version!r} for state version {version}")
+    if "runtime_version" in payload and payload["runtime_version"] != str(version):
+        raise InstallError(f"{path}: runtime_version must be {str(version)!r} for state version {version}")
     if "source_revision" in payload and (not isinstance(payload["source_revision"], str) or not payload["source_revision"]):
         raise InstallError(f"{path}: source_revision must be a non-empty string")
     if "runtime_sha256" in payload and not re.fullmatch(r"[0-9a-f]{64}", str(payload["runtime_sha256"])):
         raise InstallError(f"{path}: runtime_sha256 must be a 64-character lowercase hex digest")
+    if "managed_sha256" in payload:
+        hashes = payload["managed_sha256"]
+        if version != VERSION or not isinstance(hashes, dict) or set(hashes) != set(CURRENT_MANAGED_PATHS):
+            raise InstallError(f"{path}: managed_sha256 has unexpected managed paths")
+        if not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes.values()):
+            raise InstallError(f"{path}: managed_sha256 values must be lowercase SHA-256 digests")
 
 
 def read_state(target: Path, required: bool = False) -> dict[str, object] | None:
@@ -598,6 +699,93 @@ def step_for_content(
     return Step(action, path, detail, content=desired, expected_before=old, mode=file_mode(path))
 
 
+def _backup_then_replace(
+    plan: Plan,
+    path: Path,
+    old: bytes,
+    desired: bytes,
+    detail: str,
+    reserved: set[Path],
+) -> None:
+    backup = backup_path(path, reserved)
+    reserved.add(backup)
+    plan.steps.append(
+        Step(
+            "backup",
+            backup,
+            f"back up {path.name} before replacement",
+            content=old,
+            expected_before=None,
+            mode=file_mode(path),
+        )
+    )
+    plan.steps.append(Step("update", path, detail, content=desired, expected_before=old, mode=file_mode(path)))
+
+
+def _current_path_claim_status(
+    prior_state: dict[str, object] | None,
+    rel: str,
+    old: bytes,
+    desired: bytes,
+) -> tuple[bool, str]:
+    if not isinstance(prior_state, dict):
+        return False, "no matching Foundry state"
+    version = state_version(prior_state)
+    if rel.startswith(".codex/agents/"):
+        filename = Path(rel).name
+        if filename not in MANAGED_AGENTS_BY_VERSION[version]:
+            return False, f"Foundry v{version} state does not own this profile"
+    elif rel == VERIFIER_RUNNER:
+        if version != VERSION:
+            return False, f"Foundry v{version} state does not own the verifier runner"
+    else:
+        return False, "path is not part of the Foundry managed set"
+
+    if version != VERSION:
+        return True, "legacy ownership will be checked against frozen lifecycle content"
+    if old == desired:
+        return True, "content already matches the current managed template"
+    expected = _managed_hashes(prior_state).get(rel)
+    if expected is None:
+        return False, "current state predates managed-content fingerprints; drift cannot be distinguished safely"
+    if sha256(old) != expected:
+        return False, "managed content has drifted from the state-recorded fingerprint"
+    return True, "state-recorded fingerprint matches"
+
+
+def _plan_managed_path(
+    plan: Plan,
+    target: Path,
+    rel: str,
+    desired: bytes,
+    *,
+    force: bool,
+    reserved: set[Path],
+    prior_state: dict[str, object] | None,
+    install_detail: str,
+    update_detail: str,
+) -> bool:
+    path = target / rel
+    old = read_bytes(path)
+    if old is None:
+        plan.steps.append(Step("create", path, install_detail, content=desired, expected_before=None, mode=file_mode(path)))
+        return True
+
+    claimed, reason = _current_path_claim_status(prior_state, rel, old, desired)
+    if not claimed:
+        if not force:
+            plan.steps.append(Step("conflict", path, f"{reason}; explicit --force backup required", expected_before=old))
+            return False
+        _backup_then_replace(plan, path, old, desired, update_detail, reserved)
+        return True
+
+    if old == desired:
+        plan.steps.append(Step("unchanged", path, "managed content already current", expected_before=old))
+        return True
+    plan.steps.append(Step("update", path, update_detail, content=desired, expected_before=old, mode=file_mode(path)))
+    return True
+
+
 def _plan_profile(
     plan: Plan,
     target: Path,
@@ -606,32 +794,74 @@ def _plan_profile(
     *,
     force: bool,
     reserved: set[Path],
+    prior_state: dict[str, object] | None = None,
 ) -> bool:
-    dst = target / ".codex" / "agents" / filename
-    old = read_bytes(dst)
     desired = set_profile_model(default_profile(filename), model).encode()
-    if old == desired:
-        plan.steps.append(Step("unchanged", dst, "profile already current", expected_before=old))
-        return True
-    if old is not None and not is_foundry_managed(old.decode("utf-8", errors="replace")):
-        if not force:
-            plan.steps.append(Step("conflict", dst, "foreign same-name profile; explicit --force required", expected_before=old))
-            return False
-        backup = backup_path(dst, reserved)
-        reserved.add(backup)
-        plan.steps.append(
-            Step(
-                "backup",
-                backup,
-                f"back up foreign {filename} before replacement",
-                content=old,
-                expected_before=None,
-                mode=file_mode(dst),
+    return _plan_managed_path(
+        plan,
+        target,
+        f".codex/agents/{filename}",
+        desired,
+        force=force,
+        reserved=reserved,
+        prior_state=prior_state,
+        install_detail="install Foundry-managed profile",
+        update_detail="update Foundry-managed profile",
+    )
+
+
+def _validate_legacy_profiles(
+    plan: Plan,
+    target: Path,
+    prior_state: dict[str, object] | None,
+    prior_models: dict[str, str],
+) -> None:
+    if not isinstance(prior_state, dict):
+        return
+    version = state_version(prior_state)
+    if version == LEGACY_VERSION:
+        checks = [
+            ("repo_explorer.toml", "explorer", legacy_profile("repo_explorer.toml")),
+            ("reviewer.toml", "reviewer", legacy_profile("reviewer.toml")),
+        ]
+    elif version == PREVIOUS_VERSION:
+        checks = [
+            ("explorer.toml", "explorer", previous_profile("explorer.toml")),
+            ("reviewer.toml", "reviewer", previous_profile("reviewer.toml")),
+        ]
+    else:
+        return
+    for filename, key, template in checks:
+        path = target / ".codex" / "agents" / filename
+        old = read_bytes(path)
+        if old is None:
+            continue
+        expected = set_profile_model(template, prior_models[key]).encode()
+        if old != expected:
+            plan.steps.append(
+                Step(
+                    "conflict",
+                    path,
+                    f"Foundry v{version} {filename} has drifted; refusing automatic upgrade",
+                    expected_before=old,
+                )
             )
+
+
+def _desired_managed_contents(models: dict[str, str]) -> dict[str, bytes]:
+    contents = {
+        f".codex/agents/{filename}": set_profile_model(default_profile(filename), models[key]).encode()
+        for filename, key in (
+            ("explorer.toml", "explorer"),
+            ("reviewer.toml", "reviewer"),
+            ("verifier.toml", "verifier"),
         )
-    detail = "update Foundry-managed profile" if old is not None else "install Foundry-managed profile"
-    plan.steps.append(Step("update" if old is not None else "create", dst, detail, content=desired, expected_before=old, mode=file_mode(dst)))
-    return True
+    }
+    runner = read_bytes(ASSET_ROOT / VERIFIER_RUNNER)
+    if runner is None:
+        raise InstallError(f"missing bundled verifier runner: {ASSET_ROOT / VERIFIER_RUNNER}")
+    contents[VERIFIER_RUNNER] = runner
+    return contents
 
 
 def build_install_plan(
@@ -647,6 +877,7 @@ def build_install_plan(
         raise InstallError(f"target directory does not exist: {target}")
     reject_managed_symlink_paths(target)
     prior_state = read_state(target)
+    prior_version = state_version(prior_state) if isinstance(prior_state, dict) else None
     prior_models = normalized_models(prior_state)
 
     explorer_default, explorer_effort = bundled_profile_info("explorer.toml")
@@ -658,94 +889,93 @@ def build_install_plan(
     if requested_reviewer_model is None and reviewer_model == OBSOLETE_REVIEWER_MODEL:
         reviewer_model = reviewer_default
     verifier_model = verifier_model or prior_models.get("verifier") or verifier_default
+    selected_models = {"explorer": explorer_model, "reviewer": reviewer_model, "verifier": verifier_model}
 
     plan = Plan(target)
     agents_path, agents_content, agents_detail = desired_agents_md(target)
     plan.steps.append(step_for_content(agents_path, agents_content, agents_detail, unchanged_detail="managed block already current"))
+    config_existed = read_bytes(target / ".codex/config.toml") is not None
     config_path, config_content, concurrency_added_now, config_detail = desired_config(target)
     plan.steps.append(step_for_content(config_path, config_content, config_detail, unchanged_detail="project config already current"))
 
+    _validate_legacy_profiles(plan, target, prior_state, prior_models)
     reserved: set[Path] = set()
+
     legacy_path = target / ".codex" / "agents" / "repo_explorer.toml"
-    legacy_state = isinstance(prior_state, dict) and prior_state.get("version") == LEGACY_VERSION
-    legacy_old: bytes | None = None
-    legacy_valid = False
-    if legacy_state:
-        legacy_old = read_bytes(legacy_path)
-        legacy_model = prior_models.get("explorer") or explorer_default
-        expected_legacy = set_profile_model(legacy_explorer_profile(), legacy_model).encode()
-        if legacy_old is None:
-            legacy_valid = True
-        elif not is_foundry_managed(legacy_old.decode("utf-8", errors="replace")):
-            plan.steps.append(
-                Step("conflict", legacy_path, "legacy repo_explorer profile is no longer Foundry-managed; refusing automatic migration", expected_before=legacy_old)
-            )
-        elif legacy_old != expected_legacy:
-            plan.steps.append(
-                Step("conflict", legacy_path, "legacy repo_explorer profile has drifted; refusing automatic migration", expected_before=legacy_old)
-            )
-        else:
-            legacy_valid = True
-    elif not legacy_path.is_symlink() and legacy_path.is_file():
-        try:
-            legacy_candidate = legacy_path.read_bytes()
-        except OSError:
-            legacy_candidate = b""
-        if is_foundry_managed(legacy_candidate.decode("utf-8", errors="replace")):
+    legacy_state = prior_version == LEGACY_VERSION
+    legacy_old = read_bytes(legacy_path) if legacy_state else None
+    if not legacy_state and not legacy_path.is_symlink() and legacy_path.is_file():
+        candidate = legacy_path.read_bytes()
+        if is_foundry_managed(candidate.decode("utf-8", errors="replace")):
             plan.steps.append(
                 Step(
                     "conflict",
                     legacy_path,
-                    "legacy repo_explorer profile exists without matching legacy Foundry state; refusing automatic migration",
-                    expected_before=legacy_candidate,
+                    "legacy repo_explorer profile exists without matching v1 Foundry state; refusing automatic migration",
+                    expected_before=candidate,
                 )
             )
 
-    explorer_ready = _plan_profile(plan, target, "explorer.toml", explorer_model, force=force, reserved=reserved)
-    if legacy_state and legacy_valid:
-        if explorer_ready:
-            if legacy_old is None:
-                plan.steps.append(Step("unchanged", legacy_path, "legacy repo_explorer profile already absent", expected_before=None))
-            else:
-                plan.steps.append(Step("delete", legacy_path, "migrate legacy repo_explorer profile to explorer", expected_before=legacy_old))
+    explorer_ready = _plan_profile(
+        plan,
+        target,
+        "explorer.toml",
+        explorer_model,
+        force=force,
+        reserved=reserved,
+        prior_state=prior_state,
+    )
+    if legacy_state:
+        legacy_conflict = any(step.action == "conflict" and step.path == legacy_path for step in plan.steps)
+        if legacy_old is None:
+            plan.steps.append(Step("unchanged", legacy_path, "legacy repo_explorer profile already absent", expected_before=None))
+        elif explorer_ready and not legacy_conflict:
+            plan.steps.append(Step("delete", legacy_path, "migrate legacy repo_explorer profile to explorer", expected_before=legacy_old))
         else:
-            plan.steps.append(Step("unchanged", legacy_path, "legacy repo_explorer profile retained because explorer migration is blocked", expected_before=legacy_old))
+            plan.steps.append(Step("unchanged", legacy_path, "legacy repo_explorer retained because migration is blocked", expected_before=legacy_old))
 
-    prior_version = state_version(prior_state) if isinstance(prior_state, dict) else None
-    if prior_version == LEGACY_VERSION:
-        reviewer_path = target / ".codex" / "agents" / "reviewer.toml"
-        reviewer_old = read_bytes(reviewer_path)
-        if reviewer_old is not None:
-            expected_reviewer = set_profile_model(legacy_profile("reviewer.toml"), prior_models["reviewer"]).encode()
-            if not is_foundry_managed(reviewer_old.decode("utf-8", errors="replace")):
-                plan.steps.append(Step("conflict", reviewer_path, "Foundry v1 reviewer.toml is no longer Foundry-managed; refusing automatic upgrade", expected_before=reviewer_old))
-            elif reviewer_old != expected_reviewer:
-                plan.steps.append(Step("conflict", reviewer_path, "Foundry v1 reviewer.toml has drifted; refusing automatic upgrade", expected_before=reviewer_old))
-    if prior_version == PREVIOUS_VERSION:
-        for filename, key in (("explorer.toml", "explorer"), ("reviewer.toml", "reviewer")):
-            path = target / ".codex" / "agents" / filename
-            old = read_bytes(path)
-            if old is None:
-                continue
-            expected = set_profile_model(previous_profile(filename), prior_models[key]).encode()
-            if not is_foundry_managed(old.decode("utf-8", errors="replace")):
-                plan.steps.append(Step("conflict", path, f"Foundry v2 {filename} is no longer Foundry-managed; refusing automatic upgrade", expected_before=old))
-            elif old != expected:
-                plan.steps.append(Step("conflict", path, f"Foundry v2 {filename} has drifted; refusing automatic upgrade", expected_before=old))
+    _plan_profile(
+        plan,
+        target,
+        "reviewer.toml",
+        reviewer_model,
+        force=force,
+        reserved=reserved,
+        prior_state=prior_state,
+    )
+    _plan_profile(
+        plan,
+        target,
+        "verifier.toml",
+        verifier_model,
+        force=force,
+        reserved=reserved,
+        prior_state=prior_state,
+    )
 
-    _plan_profile(plan, target, "reviewer.toml", reviewer_model, force=force, reserved=reserved)
-    _plan_profile(plan, target, "verifier.toml", verifier_model, force=force, reserved=reserved)
+    managed_contents = _desired_managed_contents(selected_models)
+    _plan_managed_path(
+        plan,
+        target,
+        VERIFIER_RUNNER,
+        managed_contents[VERIFIER_RUNNER],
+        force=force,
+        reserved=reserved,
+        prior_state=prior_state,
+        install_detail="install deterministic Verifier runner",
+        update_detail="update deterministic Verifier runner",
+    )
 
     prior_added = bool(prior_state.get("concurrency_added")) if isinstance(prior_state, dict) else False
     concurrency_added = prior_added or concurrency_added_now
     prior_config_created = bool(prior_state.get("config_created")) if isinstance(prior_state, dict) else False
-    config_created = prior_config_created or (read_bytes(config_path) is None and concurrency_added_now)
+    config_created = prior_config_created or (not config_existed and concurrency_added_now)
     provenance = {
         "runtime_version": RUNTIME_VERSION,
         "source_revision": source_revision(),
         "runtime_sha256": runtime_sha256(),
     }
-    selected_models = {"explorer": explorer_model, "reviewer": reviewer_model, "verifier": verifier_model}
+    managed_hashes = {rel: hashlib.sha256(content).hexdigest() for rel, content in managed_contents.items()}
     state = {
         "version": VERSION,
         "managed_agents": CURRENT_MANAGED_AGENTS,
@@ -753,6 +983,7 @@ def build_install_plan(
         "concurrency_added": concurrency_added,
         "config_created": config_created,
         "models": selected_models,
+        "managed_sha256": managed_hashes,
         **provenance,
     }
     state_path = target / ".codex" / ".agent-foundry.json"
@@ -770,6 +1001,7 @@ def build_install_plan(
             "concurrency_added": concurrency_added,
             "config_created": config_created,
             "migrating_legacy_explorer": legacy_state,
+            "managed_sha256": managed_hashes,
             **provenance,
         }
     )
@@ -780,22 +1012,22 @@ def build_uninstall_plan(target: Path) -> Plan:
     target = target.resolve()
     if not target.exists() or not target.is_dir():
         raise InstallError(f"target directory does not exist: {target}")
-    reject_managed_symlink_paths(target, profile_names=())
+    reject_managed_symlink_paths(target, profile_names=(), include_runner=False)
     state = read_state(target, required=True)
     assert state is not None
     schema_version = state_version(state)
-    managed_for_version = state.get("managed_agents")
-    assert isinstance(managed_for_version, list)
-    reject_managed_symlink_paths(target, profile_names=tuple(str(x) for x in managed_for_version))
+    managed = state.get("managed_agents")
+    assert isinstance(managed, list)
+    reject_managed_symlink_paths(target, profile_names=tuple(str(value) for value in managed), include_runner=True)
+
     plan = Plan(target)
     agents_path, desired_agents, detail = desired_agents_md_without_foundry(target)
     plan.steps.append(step_for_content(agents_path, desired_agents, detail, unchanged_detail="Foundry managed block already absent"))
     config_path, desired_config_bytes, detail = remove_managed_concurrency(target, state)
     plan.steps.append(step_for_content(config_path, desired_config_bytes, detail, unchanged_detail=detail))
-    managed = state.get("managed_agents")
-    if not isinstance(managed, list) or not all(isinstance(x, str) for x in managed):
-        raise InstallError("state file has invalid managed_agents")
+
     models = normalized_models(state)
+    hashes = _managed_hashes(state)
     model_keys = {
         "explorer.toml": "explorer",
         "repo_explorer.toml": "explorer",
@@ -803,21 +1035,33 @@ def build_uninstall_plan(target: Path) -> Plan:
         "verifier.toml": "verifier",
     }
     for filename in managed:
-        path = target / ".codex" / "agents" / filename
+        path = target / ".codex" / "agents" / str(filename)
         old = read_bytes(path)
         if old is None:
             plan.steps.append(Step("unchanged", path, "managed profile already absent", expected_before=None))
             continue
-        if not is_foundry_managed(old.decode("utf-8", errors="replace")):
-            plan.steps.append(Step("conflict", path, "profile is no longer Foundry-managed; refusing to delete", expected_before=old))
-            continue
-        expected_model = str(models.get(model_keys[filename]) or bundled_profile_model(filename))
-        template = lifecycle_profile(schema_version, filename)
-        expected = set_profile_model(template, expected_model).encode()
-        if old != expected:
+        rel = f".codex/agents/{filename}"
+        if schema_version == VERSION and rel in hashes:
+            matches = sha256(old) == hashes[rel]
+        else:
+            expected_model = str(models.get(model_keys[str(filename)]) or bundled_profile_model(str(filename)))
+            expected = set_profile_model(lifecycle_profile(schema_version, str(filename)), expected_model).encode()
+            matches = old == expected
+        if not matches:
             plan.steps.append(Step("conflict", path, "Foundry-managed profile has drifted; refusing to delete modified content", expected_before=old))
             continue
         plan.steps.append(Step("delete", path, "remove Foundry-managed profile", expected_before=old))
+
+    if schema_version == VERSION and VERIFIER_RUNNER in hashes:
+        runner_path = target / VERIFIER_RUNNER
+        old = read_bytes(runner_path)
+        if old is None:
+            plan.steps.append(Step("unchanged", runner_path, "Verifier runner already absent", expected_before=None))
+        elif sha256(old) != hashes[VERIFIER_RUNNER]:
+            plan.steps.append(Step("conflict", runner_path, "Verifier runner has drifted; refusing to delete modified content", expected_before=old))
+        else:
+            plan.steps.append(Step("delete", runner_path, "remove Foundry-managed Verifier runner", expected_before=old))
+
     state_path = target / ".codex" / ".agent-foundry.json"
     plan.steps.append(step_for_content(state_path, None, "remove Foundry installation state", unchanged_detail="Foundry installation state already absent"))
     plan.metadata["mode"] = "uninstall"
@@ -828,7 +1072,8 @@ def _check_precondition(step: Step) -> None:
     current = read_bytes(step.path)
     if current != step.expected_before:
         raise InstallError(
-            f"{step.path}: changed after plan was built (expected sha256={sha256(step.expected_before)}, current sha256={sha256(current)})"
+            f"{step.path}: changed after plan was built "
+            f"(expected sha256={sha256(step.expected_before)}, current sha256={sha256(current)})"
         )
 
 
@@ -844,10 +1089,10 @@ def apply_plan(plan: Plan) -> None:
             if step.path.parent == agents_dir and step.path.name in known_profile_names
         }
     )
-    reject_managed_symlink_paths(plan.target, profile_names=tuple(planned_profile_names))
-    mutating = [s for s in plan.steps if s.mutates]
+    reject_managed_symlink_paths(plan.target, profile_names=tuple(planned_profile_names), include_runner=True)
+    mutating = [step for step in plan.steps if step.mutates]
     snapshots: dict[Path, tuple[bytes | None, int | None]] = {
-        s.path: (read_bytes(s.path), file_mode(s.path)) for s in mutating
+        step.path: (read_bytes(step.path), file_mode(step.path)) for step in mutating
     }
     candidate_dirs: set[Path] = set()
     for step in mutating:
@@ -855,11 +1100,11 @@ def apply_plan(plan: Plan) -> None:
         while parent != plan.target and plan.target in parent.parents:
             candidate_dirs.add(parent)
             parent = parent.parent
-    existing_dirs = {d for d in candidate_dirs if d.exists()}
+    existing_dirs = {directory for directory in candidate_dirs if directory.exists()}
     applied: list[Step] = []
     try:
         for step in mutating:
-            reject_managed_symlink_paths(plan.target, profile_names=tuple(planned_profile_names))
+            reject_managed_symlink_paths(plan.target, profile_names=tuple(planned_profile_names), include_runner=True)
             _check_precondition(step)
             if step.action in {"create", "update", "backup"}:
                 if step.content is None:
@@ -885,7 +1130,7 @@ def apply_plan(plan: Plan) -> None:
                     atomic_write(step.path, before, mode)
             except Exception as rollback_exc:
                 rollback_errors.append(f"{step.path}: {rollback_exc}")
-        for directory in sorted(candidate_dirs - existing_dirs, key=lambda p: len(p.parts), reverse=True):
+        for directory in sorted(candidate_dirs - existing_dirs, key=lambda path: len(path.parts), reverse=True):
             try:
                 directory.rmdir()
             except (FileNotFoundError, OSError):
@@ -917,7 +1162,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Install, update, inspect, or uninstall Codex Agent Foundry.")
     parser.add_argument("target", nargs="?", default=".", help="target repository (default: current directory)")
     parser.add_argument("--check", action="store_true", help="show the complete plan without writing")
-    parser.add_argument("--force", action="store_true", help="back up and replace foreign same-name agent profiles")
+    parser.add_argument("--force", action="store_true", help="back up and replace unowned or drifted Foundry-managed paths")
     parser.add_argument("--uninstall", action="store_true", help="remove Foundry-managed runtime state")
     parser.add_argument("--explorer-model", help="override explorer model; preserved in Foundry state")
     parser.add_argument("--reviewer-model", help="override reviewer model; preserved in Foundry state")

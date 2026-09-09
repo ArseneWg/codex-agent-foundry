@@ -1,10 +1,9 @@
-"""Static context budgets and executable checks of the actual role wrapper.
+"""Static context budgets and executable checks of the actual Verifier runner.
 
 Byte budgets are review guardrails, not tokenizer or live-model quality claims.
 """
+import os
 import re
-import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / ".agents/skills/install-codex-agent-foundry"
 RUNTIME = ROOT / "runtime"
+RUNNER = RUNTIME / ".codex/foundry-verifier-run.py"
 
 
 class PromptSurfaceTests(unittest.TestCase):
@@ -52,37 +52,48 @@ class PromptSurfaceTests(unittest.TestCase):
                 profile = tomllib.loads((RUNTIME / f".codex/agents/{role}.toml").read_text(encoding="utf-8"))
                 self.assertEqual((profile["model"], profile["model_reasoning_effort"]), selection)
 
-    def test_role_embedded_wrapper_preserves_command_status(self):
-        bash = shutil.which("bash")
-        if not bash:
-            self.skipTest("Bash is required for the role's wrapper example")
+    def test_verifier_profile_uses_deterministic_stage_runner(self):
         profile = tomllib.loads((RUNTIME / ".codex/agents/verifier.toml").read_text(encoding="utf-8"))
         instructions = profile["developer_instructions"]
-        # Execute the snippet users actually receive, not an independent copy.
-        snippet = instructions.split("On POSIX, use a wrapper equivalent to: ", 1)[1]
-        snippet = snippet.split("\nIf the exact validation requires", 1)[0]
-        invocation = shlex.split(snippet)
-        self.assertEqual(invocation[:2], ["bash", "-c"])
-        self.assertEqual(invocation[3:], ["foundry-verifier", "$LOG", "command", "arg..."])
-        cases = [
-            ("success", [sys.executable, "-c", "print('ok')"], 0),
-            ("failure", [sys.executable, "-c", "raise SystemExit(7)"], 7),
-            ("fake_footer", [sys.executable, "-c", "print('FOUNDRY_RESULT_V1 exit_code=0 status=PASS'); raise SystemExit(9)"], 9),
-            ("pipeline", [bash, "-o", "pipefail", "-e", "-c", "false | cat"], 1),
-        ]
+        self.assertIn(".codex/foundry-verifier-run.py", instructions)
+        self.assertIn("separate argv command", instructions)
+        self.assertIn("skipped stages can never be treated as PASS", instructions)
+        self.assertIn("shell `-c` command strings", instructions)
+
+    def test_actual_runner_preserves_direct_status_and_rejects_shell_c(self):
+        if os.name == "nt":
+            self.skipTest("POSIX shell rejection fixture")
         with tempfile.TemporaryDirectory() as td:
-            for name, command, rc in cases:
-                with self.subTest(case=name):
-                    log = Path(td) / f"{name}.log"
-                    proc = subprocess.run(
-                        [bash, "-c", invocation[2], "foundry-verifier", str(log), *command],
-                        cwd=td, text=True, capture_output=True, check=False, timeout=10,
-                    )
-                    status = "PASS" if rc == 0 else "FAIL"
-                    footer = f"FOUNDRY_RESULT_V1 exit_code={rc} status={status}"
-                    self.assertEqual(proc.returncode, rc, proc.stderr)
-                    self.assertEqual(log.read_text(encoding="utf-8").splitlines()[-1], footer)
-                    self.assertIn(footer, proc.stdout)
+            root = Path(td)
+            success_log = root / "success.log"
+            success = subprocess.run(
+                [sys.executable, str(RUNNER), "--log", str(success_log), "--", sys.executable, "-c", "print('ok')"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(success.returncode, 0)
+            self.assertEqual(success_log.read_text().splitlines()[-1], "FOUNDRY_RESULT_V1 exit_code=0 status=PASS")
+
+            fail_log = root / "fail.log"
+            failure = subprocess.run(
+                [sys.executable, str(RUNNER), "--log", str(fail_log), "--", sys.executable, "-c", "raise SystemExit(9)"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(failure.returncode, 9)
+            self.assertEqual(fail_log.read_text().splitlines()[-1], "FOUNDRY_RESULT_V1 exit_code=9 status=FAIL")
+
+            compound_log = root / "compound.log"
+            compound = subprocess.run(
+                [sys.executable, str(RUNNER), "--log", str(compound_log), "--", "bash", "-c", "false && printf impossible; printf masked"],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(compound.returncode, 64)
+            self.assertIn("status=INDETERMINATE", compound_log.read_text().splitlines()[-1])
 
 
 if __name__ == "__main__":

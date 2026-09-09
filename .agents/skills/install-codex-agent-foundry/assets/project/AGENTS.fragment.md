@@ -13,16 +13,16 @@ Spawn persistent profiles by `agent_type`; their profiles own model/effort. Do n
 
 ### Mission contract: role-specific preflight
 
-Before every `spawn_agent`, Root performs a lightweight semantic preflight. Use natural language, not a required JSON/schema or fixed template. Fill missing details from established task state; do not ask the user merely for checklist formatting or invent ownership, commands, baselines, or acceptance criteria. If a safety-critical detail remains unknown, keep that work with Root until resolved; this does not authorize unsafe execution.
+Before every `spawn_agent`, Root performs a lightweight semantic preflight. Use natural language, not a required JSON/schema or fixed template. Fill missing details from established task state; do not ask the user merely for checklist formatting or invent ownership, commands, baselines, or acceptance criteria. If a safety-critical detail remains unknown, keep that work with Root until resolved.
 
 | Role | Required task-specific information |
 | --- | --- |
 | Explorer | Goal; scope; evidence needed; stop condition. |
 | Reviewer | Review target/baseline; scope; materiality focus; stop condition. |
 | Worker | Goal; write scope and exclusive ownership; constraints; acceptance criteria; expected validation; stop condition. |
-| Verifier | Exact command; cwd; validation baseline; artifact/log policy including the log path; stop condition. |
+| Verifier | Exact argv command or explicit ordered stages; cwd; validation baseline; artifact/log policy including the log path for each stage; stop condition. |
 
-Use the profiles' default finding format and machine-result protocol without repeating them in each mission. Supply relevant facts, paths, and constraints the child cannot otherwise know. Subagents return bounded evidence and must not broaden their mission.
+Use the profiles' default finding/result protocols without repeating them in each mission. Supply relevant facts, paths, and constraints the child cannot otherwise know. Subagents return bounded evidence and must not broaden their mission.
 
 Default to one-level Root fan-out/fan-in and the fewest useful agents. Subagents must not spawn additional subagents by default; nested delegation requires Root's explicit authorization for a specific mission.
 
@@ -32,19 +32,19 @@ Keep one source-code writer per checkout. While Worker owns a checkout, Root mus
 
 Explorer/Reviewer do not edit. Verifier preserves source, project configuration, and user content; normal transient build/test artifacts, caches, and designated logs may be allowed. These are behavioral contracts, not independent filesystem sandboxes; hard isolation comes from parent/runtime permissions.
 
-Source-preserving work may run concurrently only while relevant source state stays stable. During same-checkout validation, pause relevant writes. If Root must keep editing, use a separate worktree or other immutable snapshot. Bind evidence to the actual validation baseline, including relevant uncommitted changes. If that state changes during validation, discard that evidence and rerun required checks against the final state.
+Source-preserving work may run concurrently only while relevant source state stays stable. During validation in the same checkout, pause relevant writes. If Root must keep editing, use a separate worktree or other immutable snapshot. Bind evidence to the actual validation baseline, including relevant uncommitted changes. If that state changes during validation, discard that evidence and rerun required checks against the final state.
 
 ### Machine-verifiable verification results
 
-Preserve the exact validation command's exit status before logging, timing, cleanup, or summary commands can replace it. Use failure-preserving pipeline/sequence handling; the Verifier profile contains the wrapper. Keep full output in a designated log, preferably outside source-owned paths.
+For source-dependent validation, each required stage is one argv command executed with `.codex/foundry-verifier-run.py`. Do not represent multiple required stages as one shell command string, pipeline, `&&`/`||` chain, or trailing cleanup/summary sequence. Multi-stage validation runs stages separately and stops on the first nonzero or INDETERMINATE result. Skipped required stages are never PASS.
 
-PASS requires tool/wrapper exit 0 and the final wrapper-appended footer `FOUNDRY_RESULT_V1 exit_code=0 status=PASS`. A nonzero validation exit is FAIL; missing, malformed, stale, or conflicting evidence is INDETERMINATE, never PASS. Return command, cwd, baseline, actual exit, literal footer, log path, concise diagnostics, and elapsed time when available.
+A stage PASS requires tool exit 0 and its final footer `FOUNDRY_RESULT_V1 exit_code=0 status=PASS`. Nonzero is FAIL; missing, malformed, stale, or conflicting machine evidence is INDETERMINATE. Overall PASS requires every assigned stage to PASS.
 
-Root must read the referenced log's final `FOUNDRY_RESULT_V1` line before accepting a delegated PASS, and reconcile it with the tool result and assigned scope. Earlier footer-like command output is not authoritative. Failed or uncertain results return to Root for diagnosis or an explicitly justified rerun.
+Root must read the referenced log's final `FOUNDRY_RESULT_V1` line for every required stage before accepting delegated PASS, reconcile it with tool results, and confirm every assigned stage actually ran. Failed or uncertain results return to Root for diagnosis or an explicitly justified rerun.
 
 ### Context and completion
 
-For self-contained missions, prefer `fork_turns = "none"` when supported and reliable; pass the needed context explicitly. Otherwise use the smallest useful positive last-N. Full-history forks are exceptional and require justification; no-history delivery failures do not justify silently copying everything.
+For self-contained missions, prefer `fork_turns = "none"` when supported and reliable; pass the needed context explicitly. Otherwise use the smallest useful positive last-N. Full-history forks are exceptional and require justification.
 
 Keep raw output in files and use targeted reads. Aggregate mechanical polling into one bounded shell/program loop with a stop condition. Do not repeat a deterministic build/test/check without relevant state changes, a plausible transient failure, or an explicit reason.
 

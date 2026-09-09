@@ -20,6 +20,7 @@ FILES = [
     ".codex/agents/explorer.toml",
     ".codex/agents/reviewer.toml",
     ".codex/agents/verifier.toml",
+    ".codex/foundry-verifier-run.py",
 ]
 LEGACY_PACKAGED_FILES = [
     ".codex/agents/repo_explorer.toml",
