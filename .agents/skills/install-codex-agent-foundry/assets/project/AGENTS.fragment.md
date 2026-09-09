@@ -56,7 +56,7 @@ bash -c '
 
 When the exact validation itself needs a pipeline or shell sequence, pass `bash -o pipefail -e -c '...'` as the wrapped command. Do not put `tee`, `|| true`, a trailing `echo`, a timer, or another pipeline outside the status-preserving wrapper where it could replace the validation exit code. On non-POSIX platforms use the native equivalent: capture the validation status immediately, append the same footer, and return the same process status.
 
-The final `FOUNDRY_RESULT_V1` line in the log is authoritative machine evidence. A delegated PASS is valid only when the wrapper/tool result is exit 0 and the final footer says exactly `exit_code=0 status=PASS`. Any nonzero status is FAIL. Missing, malformed, conflicting, or mismatched footer/status evidence is INDETERMINATE and must never be reported or accepted as PASS.
+The final `FOUNDRY_RESULT_V1` line in the log is authoritative machine evidence. The canonical successful footer is `FOUNDRY_RESULT_V1 exit_code=0 status=PASS`. A delegated PASS is valid only when the wrapper/tool result is exit 0 and the final footer says exactly `exit_code=0 status=PASS`. Any nonzero status is FAIL. Missing, malformed, conflicting, or mismatched footer/status evidence is INDETERMINATE and must never be reported or accepted as PASS.
 
 Verifier must return the literal final footer and log path. Before Root uses a delegated PASS as completion evidence, Root must read the referenced log's final `FOUNDRY_RESULT_V1` line and confirm `exit_code=0 status=PASS`. Earlier footer-like text from the validation command is not authoritative; only the final wrapper-appended footer counts.
 
