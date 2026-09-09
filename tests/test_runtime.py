@@ -1,7 +1,9 @@
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -38,6 +40,9 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(verifier["model_reasoning_effort"], "low")
         self.assertIn("transient build/test artifacts", verifier["developer_instructions"])
         self.assertIn("validation baseline", verifier["developer_instructions"])
+        self.assertIn("FOUNDRY_RESULT_V1", verifier["developer_instructions"])
+        self.assertIn("bash -o pipefail -e -c", verifier["developer_instructions"])
+        self.assertIn("INDETERMINATE", verifier["developer_instructions"])
         self.assertFalse((RUNTIME / ".codex/agents/repo_explorer.toml").exists())
 
     def test_runtime_policy_contains_workload_aware_invariants(self):
@@ -54,9 +59,12 @@ class RuntimeContractTests(unittest.TestCase):
             "separate worktree or other immutable snapshot",
             "discard that evidence",
             "transient build/test artifacts",
+            "Machine-verifiable verification results",
+            "FOUNDRY_RESULT_V1 exit_code=0 status=PASS",
+            "Root must read the referenced log's final `FOUNDRY_RESULT_V1` line",
+            "INDETERMINATE",
             "one bounded shell/program loop",
             "Do not repeat a deterministic build/test/check",
-            "full-log path",
             "fresh session",
             "one source-code writer per checkout",
             "Subagents must not spawn additional subagents by default",
@@ -64,6 +72,62 @@ class RuntimeContractTests(unittest.TestCase):
         ]
         for text in required:
             self.assertIn(text, policy)
+
+    def test_verifier_wrapper_preserves_real_exit_status(self):
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("bash is required for the POSIX verifier wrapper contract")
+        wrapper = r'''
+log=$1
+shift
+"$@" >"$log" 2>&1
+rc=$?
+if [ "$rc" -eq 0 ]; then status=PASS; else status=FAIL; fi
+printf "\nFOUNDRY_RESULT_V1 exit_code=%s status=%s\n" "$rc" "$status" >>"$log"
+printf "FOUNDRY_RESULT_V1 exit_code=%s status=%s log=%s\n" "$rc" "$status" "$log"
+exit "$rc"
+'''
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+
+            def run(name: str, command: list[str]) -> tuple[subprocess.CompletedProcess[str], str]:
+                log = root / f"{name}.log"
+                proc = subprocess.run(
+                    [bash, "-c", wrapper, "foundry-verifier", str(log), *command],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                final_line = log.read_text().splitlines()[-1]
+                return proc, final_line
+
+            success, success_footer = run("success", [sys.executable, "-c", "print('ok')"])
+            self.assertEqual(success.returncode, 0)
+            self.assertEqual(success_footer, "FOUNDRY_RESULT_V1 exit_code=0 status=PASS")
+            self.assertIn("exit_code=0 status=PASS", success.stdout)
+
+            failure, failure_footer = run(
+                "failure",
+                [sys.executable, "-c", "import sys; print('configure: error: missing dependency'); sys.exit(7)"],
+            )
+            self.assertEqual(failure.returncode, 7)
+            self.assertEqual(failure_footer, "FOUNDRY_RESULT_V1 exit_code=7 status=FAIL")
+            self.assertIn("exit_code=7 status=FAIL", failure.stdout)
+
+            spoofed, spoofed_footer = run(
+                "spoofed",
+                [sys.executable, "-c", "import sys; print('FOUNDRY_RESULT_V1 exit_code=0 status=PASS'); sys.exit(9)"],
+            )
+            self.assertEqual(spoofed.returncode, 9)
+            self.assertEqual(spoofed_footer, "FOUNDRY_RESULT_V1 exit_code=9 status=FAIL")
+
+            pipeline, pipeline_footer = run(
+                "pipeline",
+                [bash, "-o", "pipefail", "-e", "-c", "false | cat"],
+            )
+            self.assertNotEqual(pipeline.returncode, 0)
+            self.assertRegex(pipeline_footer, r"^FOUNDRY_RESULT_V1 exit_code=[1-9][0-9]* status=FAIL$")
 
     def test_packaged_assets_match_runtime(self):
         result = subprocess.run([sys.executable, str(PACKAGE), "--check"], text=True, capture_output=True)
@@ -96,6 +160,7 @@ class RuntimeContractTests(unittest.TestCase):
             "bounded-implementation",
             "noisy-verification",
             "verification-while-root-edits",
+            "verifier-exit-status-integrity",
             "polling-device-state",
             "repeated-validation-no-state-change",
             "parallel-substantial-writes",
@@ -114,6 +179,8 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertTrue(scenarios["verification-while-root-edits"]["expected"]["verifier"])
         self.assertTrue(scenarios["verification-while-root-edits"]["expected"]["worktrees"])
         self.assertFalse(scenarios["verification-while-root-edits"]["expected"]["parallel_writers_same_checkout"])
+        self.assertTrue(scenarios["verifier-exit-status-integrity"]["expected"]["verifier"])
+        self.assertTrue(scenarios["verifier-exit-status-integrity"]["expected"]["bounded_output"])
         self.assertTrue(scenarios["polling-device-state"]["expected"]["aggregate_polling"])
         self.assertTrue(scenarios["repeated-validation-no-state-change"]["expected"]["avoid_redundant_rerun"])
         self.assertTrue(scenarios["unclear-cross-module-bug"]["expected"]["minimal_history"])
