@@ -1,6 +1,6 @@
-"""Static context budgets and executable checks of the actual Verifier runner.
+"""Context budgets for prompt-adjacent surfaces plus Verifier execution checks.
 
-Byte budgets are review guardrails, not tokenizer or live-model quality claims.
+README files are human-facing documentation and are intentionally not byte-budgeted.
 """
 import os
 import re
@@ -22,14 +22,21 @@ class PromptSurfaceTests(unittest.TestCase):
         budgets = {
             RUNTIME / "AGENTS.fragment.md": 6500,
             SKILL / "SKILL.md": 3000,
-            ROOT / "README.md": 9000,
-            ROOT / "README.zh-CN.md": 9000,
             SKILL / "references/design.md": 11000,
             ROOT / "evals/README.md": 3000,
         }
         for path, limit in budgets.items():
             with self.subTest(path=path.relative_to(ROOT)):
                 self.assertLessEqual(len(path.read_bytes()), limit)
+
+    def test_readmes_are_visual_human_documentation(self):
+        for path in (ROOT / "README.md", ROOT / "README.zh-CN.md"):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertGreaterEqual(text.count("```mermaid"), 5)
+                self.assertIn("foundry-verifier-run.py", text)
+                self.assertIn("managed_sha256", text)
+                self.assertIn("AGENTS.fragment.md", text)
 
     def test_discovery_description_is_small_and_scoped(self):
         text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
