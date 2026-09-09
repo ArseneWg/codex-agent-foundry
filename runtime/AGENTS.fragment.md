@@ -31,9 +31,34 @@ Client compatibility is part of this rule: if an installed Codex release fails t
 - When Verifier runs in the same checkout, Root must keep the relevant source state stable until Verifier returns. If Root needs to continue changing relevant source, run verification from a separate worktree or other immutable snapshot.
 - If relevant source state changes during a same-checkout verification, discard that evidence and rerun the required validation against the final state.
 - For polling that does not require fresh model judgment on every observation, use one bounded shell/program loop and return the terminal condition instead of repeated model-tool turns.
-- Keep large build, test, device, and log output in files when practical. Prefer logs outside source-owned paths. Return bounded evidence: command, cwd, validation baseline, PASS/FAIL, exit code, elapsed time when available, concise relevant diagnostics, and a full-log path.
+- Keep large build, test, device, and log output in files when practical. Prefer logs outside source-owned paths. Return bounded evidence rather than full logs.
 - Do not repeat a deterministic build/test/check without a relevant state change, a plausibly transient failure, or an explicit reason.
 - On failure, Verifier stops and returns evidence to Root. Root decides whether diagnosis needs Explorer, a stronger model, implementation, or a rerun.
+
+### Machine-verifiable verification results
+
+Verifier must preserve the exact validation command's real exit status before running any logging, timing, formatting, or follow-up command. PASS/FAIL is derived from that captured status, never inferred from log prose.
+
+On POSIX, use a wrapper equivalent to:
+
+```bash
+bash -c '
+  log=$1
+  shift
+  "$@" >"$log" 2>&1
+  rc=$?
+  if [ "$rc" -eq 0 ]; then status=PASS; else status=FAIL; fi
+  printf "\nFOUNDRY_RESULT_V1 exit_code=%s status=%s\n" "$rc" "$status" >>"$log"
+  printf "FOUNDRY_RESULT_V1 exit_code=%s status=%s log=%s\n" "$rc" "$status" "$log"
+  exit "$rc"
+' foundry-verifier "$LOG" command arg...
+```
+
+When the exact validation itself needs a pipeline or shell sequence, pass `bash -o pipefail -e -c '...'` as the wrapped command. Do not put `tee`, `|| true`, a trailing `echo`, a timer, or another pipeline outside the status-preserving wrapper where it could replace the validation exit code. On non-POSIX platforms use the native equivalent: capture the validation status immediately, append the same footer, and return the same process status.
+
+The final `FOUNDRY_RESULT_V1` line in the log is authoritative machine evidence. A delegated PASS is valid only when the wrapper/tool result is exit 0 and the final footer says exactly `exit_code=0 status=PASS`. Any nonzero status is FAIL. Missing, malformed, conflicting, or mismatched footer/status evidence is INDETERMINATE and must never be reported or accepted as PASS.
+
+Verifier must return the literal final footer and log path. Before Root uses a delegated PASS as completion evidence, Root must read the referenced log's final `FOUNDRY_RESULT_V1` line and confirm `exit_code=0 status=PASS`. Earlier footer-like text from the validation command is not authoritative; only the final wrapper-appended footer counts.
 
 ### Evidence reuse and session lifecycle
 
@@ -71,4 +96,4 @@ A subagent should return evidence and results, not silently broaden its mission.
 
 ### Completion
 
-Agent agreement is not evidence of correctness. Before declaring work complete, the root must inspect the final diff, confirm relevant validation evidence still matches the final source state, reconcile material reviewer findings, rerun critical checks when delegated evidence is incomplete, stale, or high-risk, and distinguish verified facts from unresolved assumptions.
+Agent agreement is not evidence of correctness. Before declaring work complete, the root must inspect the final diff, confirm relevant validation evidence still matches the final source state, independently confirm the final machine footer for delegated PASS results, reconcile material reviewer findings, rerun critical checks when delegated evidence is incomplete, stale, inconsistent, or high-risk, and distinguish verified facts from unresolved assumptions.
