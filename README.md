@@ -16,7 +16,7 @@ A small repository-level collaboration policy for Codex: Root owns decisions and
 
 Keep short commands with Root. Use specialists only when isolation or parallel work offsets handoff cost. Planning/architecture stay with Root; research stays on demand. A new permanent role needs recurring narrow work, measurable benefit, clear ownership, and a reason built-ins cannot suffice.
 
-Foundry Reviewer supports review inside a larger task; native `/review` or `codex review` remains the user-triggered review workflow. Context separation, not another persona, is its purpose.
+Foundry Reviewer supports review inside a larger task; native `/review` or `codex review` remains the user-triggered review workflow.
 
 ## Runtime contract
 
