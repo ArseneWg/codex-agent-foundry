@@ -21,12 +21,12 @@ Installer、迁移逻辑、state 指纹、Verifier runner、测试和 CI，都�
 
 ```mermaid
 flowchart TB
-    U[用户任务] --> R[Root\n规划 · 集成 · 最终判断]
+    U[用户任务] --> R[Root<br/>规划 · 集成 · 最终判断]
 
-    R -->|调用链不清楚| E[Explorer\nTerra / medium]
-    R -->|长时间或高输出验证| V[Verifier\nLuna / low]
-    R -->|独立冷审| Q[Reviewer\nTerra / high]
-    R -->|边界明确的实现| W[内置 Worker\n随任务确定]
+    R -->|调用链不清楚| E[Explorer<br/>Terra / medium]
+    R -->|长时间或高输出验证| V[Verifier<br/>Luna / low]
+    R -->|独立冷审| Q[Reviewer<br/>Terra / high]
+    R -->|边界明确的实现| W[内置 Worker<br/>随任务确定]
 
     E -->|证据 · 风险 · 未知项| R
     V -->|阶段结果 · 日志 · footer| R
@@ -114,7 +114,7 @@ flowchart TD
     B -->|缺字段| C{当前 task state 已经知道?}
     C -->|是| D[Root 自动补齐已知事实]
     D --> S
-    C -->|否，属于安全关键条件| K[任务留在 Root\n直到边界明确]
+    C -->|否，属于安全关键条件| K[任务留在 Root<br/>直到边界明确]
     C -->|否，但非安全关键| N[缩小或澄清范围]
     N --> B
 ```
@@ -138,7 +138,7 @@ Verifier 的存在，是因为构建、测试、等待、日志、设备检查�
 
 ```mermaid
 flowchart LR
-    M[Verifier Mission\n精确 stages + cwd + baseline] --> S1[Stage 1 argv]
+    M[Verifier Mission<br/>精确 stages + cwd + baseline] --> S1[Stage 1 argv]
     S1 --> R1[foundry-verifier-run.py]
     R1 -->|shell=False| P1[真实进程]
     P1 --> L1[Stage log]
@@ -202,8 +202,8 @@ flowchart TB
     end
 
     subgraph Parallel[需要实质性并行写入]
-        A[Worktree A\nRoot writer]
-        B[Worktree B\nWorker writer]
+        A[Worktree A<br/>Root writer]
+        B[Worktree B<br/>Worker writer]
         I[Root 集成]
         A --> I
         B --> I
@@ -270,7 +270,7 @@ python3 "$SKILL/scripts/verify.py" /path/to/repo
 ```mermaid
 flowchart LR
     P[Plan / --check] --> C{有冲突?}
-    C -->|有| B[Blocked plan\n零写入]
+    C -->|有| B[Blocked plan<br/>零写入]
     C -->|无| A[Apply]
     A --> S[写入 state + managed_sha256]
     S --> V[verify.py]
