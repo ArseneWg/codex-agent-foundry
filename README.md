@@ -21,12 +21,12 @@ The installer, migration logic, state fingerprints, verification helper, tests, 
 
 ```mermaid
 flowchart TB
-    U[User task] --> R[Root\nplan · integrate · final judgment]
+    U[User task] --> R[Root<br/>plan · integrate · final judgment]
 
-    R -->|unclear code path| E[Explorer\nTerra / medium]
-    R -->|long or noisy validation| V[Verifier\nLuna / low]
-    R -->|independent cold review| Q[Reviewer\nTerra / high]
-    R -->|bounded implementation| W[Built-in Worker\nmission-dependent]
+    R -->|unclear code path| E[Explorer<br/>Terra / medium]
+    R -->|long or noisy validation| V[Verifier<br/>Luna / low]
+    R -->|independent cold review| Q[Reviewer<br/>Terra / high]
+    R -->|bounded implementation| W[Built-in Worker<br/>mission-dependent]
 
     E -->|evidence · risks · unknowns| R
     V -->|stage results · logs · footer| R
@@ -114,7 +114,7 @@ flowchart TD
     B -->|missing details| C{Already known from task state?}
     C -->|yes| D[Root fills the missing facts]
     D --> S
-    C -->|no, safety-critical| K[Keep work with Root\nuntil bounded]
+    C -->|no, safety-critical| K[Keep work with Root<br/>until bounded]
     C -->|no, noncritical| N[Reduce or clarify scope]
     N --> B
 ```
@@ -138,7 +138,7 @@ Each source-dependent required stage is executed separately through the installe
 
 ```mermaid
 flowchart LR
-    M[Verifier mission\nexact stages + cwd + baseline] --> S1[Stage 1 argv]
+    M[Verifier mission<br/>exact stages + cwd + baseline] --> S1[Stage 1 argv]
     S1 --> R1[foundry-verifier-run.py]
     R1 -->|shell=False| P1[Process]
     P1 --> L1[Stage log]
@@ -202,8 +202,8 @@ flowchart TB
     end
 
     subgraph Parallel[Substantial parallel writes]
-        A[Worktree A\nRoot writer]
-        B[Worktree B\nWorker writer]
+        A[Worktree A<br/>Root writer]
+        B[Worktree B<br/>Worker writer]
         I[Root integration]
         A --> I
         B --> I
@@ -270,7 +270,7 @@ The target receives:
 ```mermaid
 flowchart LR
     P[Plan / --check] --> C{Conflict?}
-    C -->|yes| B[Blocked plan\nzero writes]
+    C -->|yes| B[Blocked plan<br/>zero writes]
     C -->|no| A[Apply]
     A --> S[Record state + managed_sha256]
     S --> V[verify.py]
