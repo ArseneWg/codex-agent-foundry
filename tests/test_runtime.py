@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import sys
@@ -10,6 +11,13 @@ RUNTIME = ROOT / "runtime"
 SKILL = ROOT / ".agents/skills/install-codex-agent-foundry"
 PACKAGE = ROOT / "scripts/package_runtime.py"
 
+FROZEN_LEGACY_SHA256 = {
+    "v1/repo_explorer.toml": "a517586bc643c1214e186d6f2a738a6b5ccc850cd81c7edbb1a76ce00f8cb40e",
+    "v1/reviewer.toml": "c352eba53459e8e3a971a68bc1ea75a03c4ce7f1624ba7ec5000c57afbfdf8af",
+    "v2/explorer.toml": "4faffe2df9018c7d3ddf88d1152d2138c9d96275fee27867aa5c64778933d426",
+    "v2/reviewer.toml": "041722cf72606d47e9d1068375d4132af58852d4f9cf0e3352675bb9c0e90aea",
+}
+
 
 class RuntimeContractTests(unittest.TestCase):
     def test_runtime_toml_is_valid_and_roles_are_safe_defaults(self):
@@ -17,27 +25,61 @@ class RuntimeContractTests(unittest.TestCase):
         value = config["agents"]["max_concurrent_threads_per_session"]
         self.assertIsInstance(value, int)
         self.assertGreaterEqual(value, 1)
-        for name in ("explorer.toml", "reviewer.toml"):
+        for name in ("explorer.toml", "reviewer.toml", "verifier.toml"):
             profile = tomllib.loads((RUNTIME / ".codex/agents" / name).read_text())
             self.assertNotIn("sandbox_mode", profile)
             self.assertIn("Do not edit files", profile["developer_instructions"])
             self.assertIn("spawn subagents", profile["developer_instructions"])
         explorer = tomllib.loads((RUNTIME / ".codex/agents/explorer.toml").read_text())
+        verifier = tomllib.loads((RUNTIME / ".codex/agents/verifier.toml").read_text())
         self.assertEqual(explorer["name"], "explorer")
+        self.assertEqual(verifier["name"], "verifier")
+        self.assertEqual(verifier["model"], "gpt-5.6-luna")
+        self.assertEqual(verifier["model_reasoning_effort"], "low")
+        self.assertIn("transient build/test artifacts", verifier["developer_instructions"])
+        self.assertIn("validation baseline", verifier["developer_instructions"])
+        self.assertIn(".codex/foundry-verifier-run.py", verifier["developer_instructions"])
+        self.assertIn("separate argv command", verifier["developer_instructions"])
+        self.assertIn("runner rejects shell `-c` command strings", verifier["developer_instructions"])
+        self.assertIn("skipped stages can never be treated as PASS", verifier["developer_instructions"])
+        self.assertIn("INDETERMINATE", verifier["developer_instructions"])
+        runner = (RUNTIME / ".codex/foundry-verifier-run.py").read_text()
+        self.assertIn("# managed-by: codex-agent-foundry", runner)
+        self.assertIn("subprocess.run(command", runner)
         self.assertFalse((RUNTIME / ".codex/agents/repo_explorer.toml").exists())
 
-    def test_runtime_policy_contains_core_orchestration_invariants(self):
+    def test_runtime_policy_contains_workload_aware_invariants(self):
         policy = (RUNTIME / "AGENTS.fragment.md").read_text()
         required = [
             "root is the default source-code writer",
+            "single short deterministic command",
+            'fork_turns = "none"',
+            "smallest useful positive last-N",
+            "Full-history forks are exceptional",
+            "Do not pass a spawn-time model or reasoning-effort override",
+            'agent_type = "verifier"',
+            "same checkout",
+            "separate worktree or other immutable snapshot",
+            "discard that evidence",
+            "transient build/test artifacts",
+            "Machine-verifiable verification results",
+            ".codex/foundry-verifier-run.py",
+            "FOUNDRY_RESULT_V1 exit_code=0 status=PASS",
+            "Root must read the referenced log's final `FOUNDRY_RESULT_V1` line",
+            "confirm every assigned stage actually ran",
+            "INDETERMINATE",
+            "one bounded shell/program loop",
+            "Do not repeat a deterministic build/test/check",
+            "fresh session",
             "one source-code writer per checkout",
-            "separate Git worktrees",
             "Subagents must not spawn additional subagents by default",
-            "one-level fan-out",
+            "Mission contract: role-specific preflight",
+            "lightweight semantic preflight",
+            "not a required JSON/schema",
+            "write scope and exclusive ownership",
+            "artifact/log policy including the log path",
+            "keep that work with Root",
             "Agent agreement is not evidence of correctness",
-            "stop condition",
-            "overrides Codex's built-in `explorer`",
-            "not an independent per-role sandbox boundary",
         ]
         for text in required:
             self.assertIn(text, policy)
@@ -46,41 +88,64 @@ class RuntimeContractTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(PACKAGE), "--check"], text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_legacy_lifecycle_fixtures_are_frozen(self):
+        legacy = SKILL / "assets/legacy"
+        for rel, expected in FROZEN_LEGACY_SHA256.items():
+            with self.subTest(rel=rel):
+                actual = hashlib.sha256((legacy / rel).read_bytes()).hexdigest()
+                self.assertEqual(actual, expected)
+
     def test_skill_frontmatter_has_required_fields_only_supported_shape(self):
         text = (SKILL / "SKILL.md").read_text()
         self.assertTrue(text.startswith("---\n"))
         header = text.split("---\n", 2)[1]
         self.assertIn("\nname:", "\n" + header)
         self.assertIn("\ndescription:", "\n" + header)
+        self.assertIn('version: "3"', header)
         self.assertNotIn("\ncompatibility:", "\n" + header)
 
-    def test_eval_scenarios_cover_core_routes(self):
+    def test_eval_scenarios_cover_workload_routes(self):
         payload = json.loads((ROOT / "evals/scenarios.json").read_text())
-        ids = {s["id"] for s in payload["scenarios"]}
+        self.assertEqual(payload["version"], 3)
+        ids = {scenario["id"] for scenario in payload["scenarios"]}
         required = {
             "trivial-change",
+            "single-short-validation",
             "unclear-cross-module-bug",
             "bounded-implementation",
+            "underspecified-worker-mission",
             "noisy-verification",
+            "underspecified-verifier-mission",
+            "verification-while-root-edits",
+            "verifier-exit-status-integrity",
+            "polling-device-state",
+            "repeated-validation-no-state-change",
             "parallel-substantial-writes",
         }
         self.assertTrue(required.issubset(ids))
         expected_keys = {
-            "explorer",
-            "reviewer",
-            "worker",
-            "temporary_verifier",
-            "worktrees",
-            "parallel_writers_same_checkout",
+            "explorer", "reviewer", "worker", "verifier", "worktrees",
+            "parallel_writers_same_checkout", "minimal_history", "bounded_output",
+            "aggregate_polling", "avoid_redundant_rerun",
         }
         for scenario in payload["scenarios"]:
             self.assertEqual(set(scenario["expected"]), expected_keys)
-        scenarios = {s["id"]: s for s in payload["scenarios"]}
-        self.assertFalse(scenarios["trivial-change"]["expected"]["explorer"])
-        self.assertTrue(scenarios["unclear-cross-module-bug"]["expected"]["explorer"])
-        self.assertTrue(scenarios["bounded-implementation"]["expected"]["worker"])
-        self.assertTrue(scenarios["noisy-verification"]["expected"]["temporary_verifier"])
-        self.assertFalse(scenarios["noisy-verification"]["expected"]["reviewer"])
+        scenarios = {scenario["id"]: scenario for scenario in payload["scenarios"]}
+        self.assertFalse(scenarios["single-short-validation"]["expected"]["verifier"])
+        self.assertTrue(scenarios["noisy-verification"]["expected"]["verifier"])
+        self.assertFalse(scenarios["underspecified-worker-mission"]["expected"]["worker"])
+        self.assertTrue(scenarios["underspecified-verifier-mission"]["expected"]["verifier"])
+        self.assertTrue(scenarios["underspecified-verifier-mission"]["expected"]["minimal_history"])
+        self.assertTrue(scenarios["verification-while-root-edits"]["expected"]["verifier"])
+        self.assertTrue(scenarios["verification-while-root-edits"]["expected"]["worktrees"])
+        self.assertFalse(scenarios["verification-while-root-edits"]["expected"]["parallel_writers_same_checkout"])
+        self.assertTrue(scenarios["verifier-exit-status-integrity"]["expected"]["verifier"])
+        self.assertIn("deterministic argv runner", scenarios["verifier-exit-status-integrity"]["description"])
+        self.assertIn("unexecuted later stage", scenarios["verifier-exit-status-integrity"]["description"])
+        self.assertTrue(scenarios["polling-device-state"]["expected"]["aggregate_polling"])
+        self.assertTrue(scenarios["repeated-validation-no-state-change"]["expected"]["avoid_redundant_rerun"])
+        self.assertTrue(scenarios["unclear-cross-module-bug"]["expected"]["minimal_history"])
+        self.assertTrue(scenarios["parallel-substantial-writes"]["expected"]["worktrees"])
         self.assertFalse(scenarios["parallel-substantial-writes"]["expected"]["parallel_writers_same_checkout"])
 
     def test_installer_default_models_come_from_runtime_profiles(self):
@@ -91,7 +156,7 @@ class RuntimeContractTests(unittest.TestCase):
         assert spec.loader is not None
         sys.modules[spec.name] = module
         spec.loader.exec_module(module)
-        for filename in ("explorer.toml", "reviewer.toml"):
+        for filename in ("explorer.toml", "reviewer.toml", "verifier.toml"):
             runtime_profile = tomllib.loads((RUNTIME / ".codex/agents" / filename).read_text())
             self.assertEqual(module.bundled_profile_model(filename), runtime_profile["model"])
 

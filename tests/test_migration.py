@@ -18,14 +18,20 @@ sys.modules[spec.name] = mod
 spec.loader.exec_module(mod)
 
 
-def seed_v1(root: Path, *, explorer_model: str = "gpt-5.6-terra", drift: bool = False) -> None:
+def seed_v1(
+    root: Path,
+    *,
+    explorer_model: str = "gpt-5.6-terra",
+    reviewer_model: str = "gpt-5.6",
+    drift: bool = False,
+) -> None:
     agents = root / ".codex/agents"
     agents.mkdir(parents=True)
     legacy = mod.set_profile_model(mod.legacy_explorer_profile(), explorer_model)
     if drift:
         legacy += "\n# user drift\n"
     (agents / "repo_explorer.toml").write_text(legacy)
-    (agents / "reviewer.toml").write_text(mod.legacy_profile("reviewer.toml"))
+    (agents / "reviewer.toml").write_text(mod.set_profile_model(mod.legacy_profile("reviewer.toml"), reviewer_model))
     (root / ".codex/config.toml").write_text("[agents]\nmax_concurrent_threads_per_session = 4\n")
     (root / "AGENTS.md").write_text(f"{mod.START}\nlegacy policy\n{mod.END}\n")
     state = {
@@ -34,12 +40,82 @@ def seed_v1(root: Path, *, explorer_model: str = "gpt-5.6-terra", drift: bool = 
         "agents_md_markers": [mod.START, mod.END],
         "concurrency_added": True,
         "config_created": True,
-        "models": {"repo_explorer": explorer_model, "reviewer": "gpt-5.6"},
+        "models": {"repo_explorer": explorer_model, "reviewer": reviewer_model},
+    }
+    (root / ".codex/.agent-foundry.json").write_text(json.dumps(state))
+
+
+def seed_v2(root: Path, *, explorer_model: str = "gpt-5.6-terra", reviewer_model: str = "gpt-5.6") -> None:
+    agents = root / ".codex/agents"
+    agents.mkdir(parents=True)
+    (agents / "explorer.toml").write_text(mod.set_profile_model(mod.previous_profile("explorer.toml"), explorer_model))
+    (agents / "reviewer.toml").write_text(mod.set_profile_model(mod.previous_profile("reviewer.toml"), reviewer_model))
+    (root / ".codex/config.toml").write_text("[agents]\nmax_concurrent_threads_per_session = 4\n")
+    (root / "AGENTS.md").write_text(f"{mod.START}\nlegacy v2 policy\n{mod.END}\n")
+    state = {
+        "version": 2,
+        "runtime_version": "2",
+        "managed_agents": ["explorer.toml", "reviewer.toml"],
+        "agents_md_markers": [mod.START, mod.END],
+        "concurrency_added": True,
+        "config_created": True,
+        "models": {"explorer": explorer_model, "reviewer": reviewer_model},
+        "source_revision": "unknown",
+        "runtime_sha256": "0" * 64,
     }
     (root / ".codex/.agent-foundry.json").write_text(json.dumps(state))
 
 
 class ExplorerMigrationTests(unittest.TestCase):
+    def test_v2_install_upgrades_to_v3_and_adds_verifier(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            seed_v2(root, explorer_model="gpt-explorer-v2", reviewer_model="gpt-reviewer-v2")
+            plan = mod.build_install_plan(root)
+            self.assertFalse(plan.blocked)
+            mod.apply_plan(plan)
+            state = json.loads((root / ".codex/.agent-foundry.json").read_text())
+            self.assertEqual(state["version"], 3)
+            self.assertEqual(state["models"]["explorer"], "gpt-explorer-v2")
+            self.assertEqual(state["models"]["reviewer"], "gpt-reviewer-v2")
+            self.assertEqual(state["models"]["verifier"], "gpt-5.6-luna")
+            self.assertTrue((root / ".codex/agents/verifier.toml").exists())
+
+    def test_v2_default_reviewer_model_migrates_to_current_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            seed_v2(root)
+            plan = mod.build_install_plan(root)
+            self.assertFalse(plan.blocked)
+            mod.apply_plan(plan)
+            state = json.loads((root / ".codex/.agent-foundry.json").read_text())
+            self.assertEqual(state["models"]["reviewer"], "gpt-5.6-terra")
+            self.assertIn('model = "gpt-5.6-terra"', (root / ".codex/agents/reviewer.toml").read_text())
+
+    def test_v2_drift_blocks_v3_upgrade(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            seed_v2(root)
+            explorer = root / ".codex/agents/explorer.toml"
+            explorer.write_text(explorer.read_text() + "\n# drift\n")
+            plan = mod.build_install_plan(root)
+            self.assertTrue(plan.blocked)
+            self.assertTrue(any(s.action == "conflict" and s.path == explorer for s in plan.steps))
+
+    def test_v2_uninstall_ignores_foreign_verifier_symlink(self):
+        if os.name == "nt":
+            self.skipTest("symlink semantics")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            seed_v2(root)
+            foreign = root / "foreign-verifier.toml"
+            foreign.write_text('name = "verifier"\n# foreign\n')
+            (root / ".codex/agents/verifier.toml").symlink_to(foreign)
+            plan = mod.build_uninstall_plan(root)
+            self.assertFalse(plan.blocked)
+            mod.apply_plan(plan)
+            self.assertEqual(foreign.read_text(), 'name = "verifier"\n# foreign\n')
+
     def test_v1_install_migrates_to_native_explorer_and_preserves_model(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -53,8 +129,20 @@ class ExplorerMigrationTests(unittest.TestCase):
             self.assertIn('name = "explorer"', explorer)
             self.assertIn('model = "gpt-custom-explorer"', explorer)
             state = json.loads((root / ".codex/.agent-foundry.json").read_text())
-            self.assertEqual(state["version"], 2)
+            self.assertEqual(state["version"], 3)
             self.assertEqual(state["models"]["explorer"], "gpt-custom-explorer")
+            self.assertEqual(state["models"]["reviewer"], "gpt-5.6-terra")
+
+    def test_v1_custom_reviewer_model_is_preserved(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            seed_v1(root, reviewer_model="gpt-reviewer-v1-custom")
+            plan = mod.build_install_plan(root)
+            self.assertFalse(plan.blocked)
+            mod.apply_plan(plan)
+            state = json.loads((root / ".codex/.agent-foundry.json").read_text())
+            self.assertEqual(state["models"]["reviewer"], "gpt-reviewer-v1-custom")
+            self.assertIn('model = "gpt-reviewer-v1-custom"', (root / ".codex/agents/reviewer.toml").read_text())
 
     def test_migration_allows_explicit_model_change_without_marking_legacy_drift(self):
         with tempfile.TemporaryDirectory() as td:
@@ -127,10 +215,10 @@ class ExplorerMigrationTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("legacy Foundry v1 explorer role detected", result.stdout)
+            self.assertIn("Foundry v1 runtime detected", result.stdout)
             self.assertIn("rerun the current installer", result.stdout)
 
-    def test_v2_ignores_foreign_legacy_role_name(self):
+    def test_v3_ignores_foreign_legacy_role_name(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             mod.apply_plan(mod.build_install_plan(root))
@@ -140,7 +228,7 @@ class ExplorerMigrationTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(VERIFY), str(root)], text=True, capture_output=True, check=False)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_v2_ignores_foreign_legacy_symlink(self):
+    def test_v3_ignores_foreign_legacy_symlink(self):
         if os.name == "nt":
             self.skipTest("symlink semantics")
         with tempfile.TemporaryDirectory() as td:
@@ -153,6 +241,16 @@ class ExplorerMigrationTests(unittest.TestCase):
             self.assertFalse(plan.blocked)
             result = subprocess.run([sys.executable, str(VERIFY), str(root)], text=True, capture_output=True, check=False)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_v1_reviewer_drift_blocks_v3_upgrade(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            seed_v1(root)
+            reviewer = root / ".codex/agents/reviewer.toml"
+            reviewer.write_text(reviewer.read_text() + "\n# reviewer drift\n")
+            plan = mod.build_install_plan(root)
+            self.assertTrue(plan.blocked)
+            self.assertTrue(any(s.action == "conflict" and s.path == reviewer for s in plan.steps))
 
     def test_v1_uninstall_ignores_foreign_current_explorer_symlink(self):
         if os.name == "nt":

@@ -1,43 +1,53 @@
 ## Codex Agent Foundry
 
-The root agent owns the goal, requirements, decomposition, architecture decisions, integration, validation responsibility, and the final answer. The root is the default source-code writer.
+Root owns the goal, requirements, planning, architecture, integration, validation, and final answer. The root is the default source-code writer. Delegate only when independent work, parallel latency savings, or context/noise isolation outweigh handoff cost. Keep a single short deterministic command with Root.
 
-Delegate only when parallelism or context isolation has a material benefit that outweighs the extra agent overhead. Prefer read-heavy or noisy independent work; do not delegate trivial or inherently serial work.
+### Routing and models
 
-### Persistent specialist profiles
+- `explorer`: no-edit investigation of code paths, ownership, dependencies, and tests; return evidence and unknowns. This project profile overrides the built-in Explorer.
+- `reviewer`: independent cold review after material implementation; focus on correctness, regressions, security, state/concurrency, and meaningful test gaps.
+- `verifier`: execute bounded long/noisy builds, tests, logs, environment/device checks, waits, and polling. Return evidence; leave diagnosis and fixes to Root.
+- Built-in `worker`: bounded implementation on demand. Keep planning/architecture with Root and narrow research on demand; add no standing Planner/Dispatcher.
 
-- Use `explorer` for no-write codebase investigation when behavior, ownership, dependencies, tests, or call paths are unclear. This project-scoped profile intentionally overrides Codex's built-in `explorer` so Foundry can pin a no-write evidence contract plus model/reasoning defaults.
-- Use `reviewer` after a material implementation for an independent cold review of correctness, regressions, security, concurrency/state risks, and meaningful test gaps.
+Spawn persistent profiles by `agent_type`; their profiles own model/effort. Do not pass a spawn-time model or reasoning-effort override merely to repeat the profile. Use `agent_type = "verifier"`, not an explicit Luna model override. If the configured role cannot start, report the error; no silent model fallback. Root may validate directly, or the installation may be explicitly changed with `--verifier-model gpt-5.6-terra`.
 
-Explorer and reviewer are behaviorally no-write: they must not edit files. Current Codex spawned roles inherit the live parent session permission/sandbox profile, so this collaboration rule is not an independent per-role sandbox boundary.
+### Mission contract: role-specific preflight
 
-### On-demand delegation
+Before every `spawn_agent`, Root performs a lightweight semantic preflight. Use natural language, not a required JSON/schema or fixed template. Fill missing details from established task state; do not ask the user merely for checklist formatting or invent ownership, commands, baselines, or acceptance criteria. If a safety-critical detail remains unknown, keep that work with Root until resolved.
 
-- Bounded implementation may be delegated to a worker only when scope, write ownership, intended behavior, constraints, acceptance criteria, and expected validation are explicit. While that worker owns the change, the root must not edit the same checkout concurrently.
-- Large or noisy verification work such as test runs, CI/log analysis, failure triage, or repetitive checks may be delegated when it can run independently and return concise evidence. Unless explicitly asked, the verification agent should report failures rather than fix them.
-- Narrow research may be delegated when it keeps substantial supporting material out of the root context.
+| Role | Required task-specific information |
+| --- | --- |
+| Explorer | Goal; scope; evidence needed; stop condition. |
+| Reviewer | Review target/baseline; scope; materiality focus; stop condition. |
+| Worker | Goal; write scope and exclusive ownership; constraints; acceptance criteria; expected validation; stop condition. |
+| Verifier | Exact argv command or explicit ordered stages; cwd; validation baseline; artifact/log policy including the log path for each stage; stop condition. |
 
-### Write ownership and spawn discipline
+Use the profiles' default finding/result protocols without repeating them in each mission. Supply relevant facts, paths, and constraints the child cannot otherwise know. Subagents return bounded evidence and must not broaden their mission.
 
-Keep one source-code writer per checkout at a time. Behaviorally no-write agents may run in parallel. For substantial parallel implementation, use separate Git worktrees or independent worktree chats.
+Default to one-level Root fan-out/fan-in and the fewest useful agents. Subagents must not spawn additional subagents by default; nested delegation requires Root's explicit authorization for a specific mission.
 
-Default to one-level fan-out from the root and fan-in back to the root. Spawn the minimum number of agents that can produce meaningfully independent evidence or latency savings.
+### Source and write ownership
 
-Subagents must not spawn additional subagents by default. Only the root may explicitly authorize nested delegation for a specific mission when the extra coordination is justified.
+Keep one source-code writer per checkout. While Worker owns a checkout, Root must not edit that same checkout. For substantial parallel writes, use separate worktrees.
 
-### Mission contract
+Explorer/Reviewer do not edit. Verifier preserves source, project configuration, and user content; normal transient build/test artifacts, caches, and designated logs may be allowed. These are behavioral contracts, not independent filesystem sandboxes; hard isolation comes from parent/runtime permissions.
 
-Give each subagent only the context needed for its task. Every delegated mission should define at least:
+Source-preserving work may run concurrently only while relevant source state stays stable. During validation in the same checkout, pause relevant writes. If Root must keep editing, use a separate worktree or other immutable snapshot. Bind evidence to the actual validation baseline, including relevant uncommitted changes. If that state changes during validation, discard that evidence and rerun required checks against the final state.
 
-- goal;
-- scope and ownership;
-- known facts and constraints;
-- evidence or acceptance criteria;
-- expected return;
-- stop condition.
+### Machine-verifiable verification results
 
-A subagent should return evidence and results, not silently broaden its mission.
+For source-dependent validation, each required stage is one argv command executed with `.codex/foundry-verifier-run.py`. Do not represent multiple required stages as one shell command string, pipeline, `&&`/`||` chain, or trailing cleanup/summary sequence. Multi-stage validation runs stages separately and stops on the first nonzero or INDETERMINATE result. Skipped required stages are never PASS.
 
-### Completion
+A stage PASS requires tool exit 0 and its final footer `FOUNDRY_RESULT_V1 exit_code=0 status=PASS`. Nonzero is FAIL; missing, malformed, stale, or conflicting machine evidence is INDETERMINATE. Overall PASS requires every assigned stage to PASS.
 
-Agent agreement is not evidence of correctness. Before declaring work complete, the root must inspect the final diff, confirm relevant validation evidence, reconcile material reviewer findings, rerun critical checks when delegated evidence is incomplete or high-risk, and distinguish verified facts from unresolved assumptions.
+Root must read the referenced log's final `FOUNDRY_RESULT_V1` line for every required stage before accepting delegated PASS, reconcile it with tool results, and confirm every assigned stage actually ran. Failed or uncertain results return to Root for diagnosis or an explicitly justified rerun.
+
+### Context and completion
+
+For self-contained missions, prefer `fork_turns = "none"` when supported and reliable; pass the needed context explicitly. Otherwise use the smallest useful positive last-N. Full-history forks are exceptional and require justification.
+
+Keep raw output in files and use targeted reads. Aggregate mechanical polling into one bounded shell/program loop with a stop condition. Do not repeat a deterministic build/test/check without relevant state changes, a plausible transient failure, or an explicit reason.
+
+After milestones or repeated compaction, checkpoint goal, decisions, changed files, validation, blockers, and next action. Prefer a fresh session from that checkpoint when stale tool history dominates.
+
+Agent agreement is not evidence of correctness. Before completion, Root inspects the final diff, reconciles material review findings, checks evidence against final source state, and reruns critical checks when evidence is incomplete, stale, inconsistent, or high-risk. Distinguish verified facts from remaining uncertainty.

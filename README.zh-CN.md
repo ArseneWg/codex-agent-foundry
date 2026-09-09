@@ -1,690 +1,95 @@
-# Codex Agent Foundry 中文说明
+# Codex Agent Foundry
 
-[English](./README.md) | [简体中文](./README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-如果只记住一句话：
+面向 Codex 的小型仓库级协作规范。Root 保留决策和最终责任，子 Agent 提供范围明确的证据或实现。Installer 负责分发与维护，不是另一套编排框架。
 
-> **Codex Agent Foundry 的核心，是用尽量少、职责清晰的 Agent，规范 Codex 在一个代码仓库里怎样协作；能沿用 Codex 原生角色，就不另外发明一套平行角色名。**
+## 角色
 
-它主要解决：
-
-- Root 应该一直负责什么？
-- 哪些工作值得交给 Subagent？
-- 为什么长期只保留 Explorer 和 Reviewer？
-- Codex 已经有 `explorer` / `worker`，Foundry 应该怎么利用它们？
-- 为什么没有常驻 `implementer`、`tester`、`architect`？
-- 为什么一个 checkout 默认只有一个 writer？
-- Explorer 如何控制模型成本？
-- 静态配置写了 Terra / medium，和“实际 child 一定用了 Terra / medium”有什么区别？
-- v1 的 `repo_explorer` 怎么安全迁移？
-- 什么情况下才值得增加第三个长期 Agent？
-
-Installer Skill、升级迁移、冲突保护、验证、测试和 CI，都是为了把这套协作规范安全地分发和维护到不同仓库。
-
----
-
-## 1. 第一原则：不是 Agent 越多越好
-
-多 Agent 很容易被设计成：
-
-```text
-Planner
-→ Architect
-→ Implementer
-→ Tester
-→ Reviewer
-→ Researcher
-→ Root
-```
-
-看起来角色很完整，但每增加一个长期 Agent 都有真实成本：
-
-- 上下文要重新转述；
-- 结果要重新汇总；
-- Agent 之间可能得出冲突结论；
-- token、延迟和线程都会增加；
-- write ownership 更难判断；
-- 自定义 profile 越多，越容易和 Codex 本身重复；
-- Codex 升级后维护面更大。
-
-所以 Foundry 只把**高频、边界稳定、隔离后明显有收益**的能力长期化。
-
-当前 baseline：
-
-```text
-                         Root
-            目标 / 规划 / 集成 / 最终验证
-                         │
-                 默认 source-code writer
-                         │
-          ┌──────────────┴──────────────┐
-          ▼                             ▼
-      explorer                       reviewer
-  Terra / medium                  GPT-5.6 / high
-      不写                            不写
-          │                             │
-          └──────────────┬──────────────┘
-                         ▼
-                       Root
-                 根据证据做最终判断
-```
-
-长期项目级 profile 只有两个：
-
-- `explorer`：覆盖 Codex 内置同名 Explorer，负责 read-heavy 证据调查；
-- `reviewer`：实现后的独立 cold review。
-
-实现、验证、研究默认按需出现。
-
----
-
-## 2. Foundry 尽量沿用 Codex 原生 vocabulary
-
-Codex 当前已经提供内置 Subagent：
-
-```text
-default   → 通用 fallback
-worker    → implementation / fixes
-explorer  → read-heavy codebase exploration
-```
-
-还提供原生：
-
-```text
-/review
-codex review
-```
-
-代码审查工作流。
-
-Foundry 的原则是：
-
-> **如果 Codex 已经有正确的角色概念，就沿用那个角色名；只有需要固定更窄的 model / effort / tools / behavior contract 时，才做项目级覆盖或额外 specialist。**
-
-因此现在不再同时保留：
-
-```text
-built-in explorer
-+
-Foundry repo_explorer
-```
-
-而是直接安装：
-
-```text
-.codex/agents/explorer.toml
-```
-
-当前 Codex 文档明确：项目自定义 Agent 与 built-in 同名时，自定义 Agent 优先。因此 Foundry 的 `explorer.toml` 会覆盖 built-in `explorer`，但 Root/Codex 仍然使用原生角色名 `explorer`。
-
----
-
-## 3. 为什么长期恰好保留 Explorer + Reviewer？
-
-| 工作 | Foundry 选择 | 原因 |
+| 角色 | 默认模型 / 推理强度 | 职责 |
 | --- | --- | --- |
-| 目标、拆解、架构判断、集成、最终验证 | **Root** | Root 拥有最完整上下文，最终责任不转交 |
-| 代码库调查 | **项目级 `explorer` override** | 高频、天然只读、适合并行、隔离收益明显，同时适合独立控制成本 |
-| 实现 / 修复 | **Root 默认；built-in `worker` 按需** | Codex 已有 worker，再造 generic implementer 收益低且增加写 ownership |
-| 独立 Review | **长期 `reviewer`** | cold context 可以挑战 writer 的原有假设 |
-| 大型 test / log / diagnostics | **临时 verifier** | 验证方式高度项目相关，generic tester 稳定价值不高 |
-| Planner / Architect | **Root** | 高层判断与用户目标强耦合，多一层角色会增加上下文传递和责任模糊 |
-| Research | **临时；稳定领域出现后再专门化** | 泛化 researcher 太宽，绑定稳定 MCP/领域后才更值得长期存在 |
+| Root | 当前会话 | 规划、默认实现、集成、验证、最终答复。 |
+| `explorer` | `gpt-5.6-terra` / `medium` | 不改文件，追踪调用链、依赖和测试；区分事实与假设。覆盖 Codex 内置同名角色。 |
+| `reviewer` | `gpt-5.6-terra` / `high` | 独立冷审实质性正确性、回归、安全、状态与测试风险。 |
+| `verifier` | `gpt-5.6-luna` / `low` | 执行长时间或高输出验证，聚合等待/轮询，返回精简证据和日志；不自行诊断、修复。 |
+| 内置 `worker` | 随任务确定 | 仅在修改范围、独占写入权和验收标准明确时承担实现。 |
 
-关键不是“软件团队里有没有这个职位”，而是：
+短命令留给 Root；只有隔离或并行收益超过交接成本时才派发。规划、架构留在 Root，研究按需进行，不增加常驻 Planner/Dispatcher。新增长期角色必须有高频窄任务、可验证收益、清晰边界，并且现有角色不足以承担。
 
-> **这个任务边界是否稳定？独立 context 是否真的有价值？固定配置是否真的带来收益？**
+Foundry Reviewer 用于完整任务中的独立审查；原生 `/review`、`codex review` 仍适合用户主动发起的代码审查。价值是独立上下文，不是多一个角色名字。
 
----
+## 运行规则
 
-## 4. 为什么直接覆盖 built-in `explorer`？
+唯一规范源是 [runtime/AGENTS.fragment.md](runtime/AGENTS.fragment.md)。
 
-内置 `explorer` 已经给了正确的角色概念，但 Foundry 希望把它收窄成一个更确定的项目级 contract：
+Root 每次派发前按角色检查 Mission。使用自然语言，不要求 JSON。已有事实可自动补齐；无法确认的安全关键条件不能猜，任务暂留 Root。Reviewer 输出格式和 Verifier 结果协议由 profile 提供，无需每次复述。
 
-```toml
-name = "explorer"
-model = "gpt-5.6-terra"
-model_reasoning_effort = "medium"
-```
+一个 checkout 同时只有一个源码 writer。Worker 独占时 Root 不并行编辑；大规模并行写入使用不同 worktree。验证必须绑定稳定源码；Root 需要继续编辑时，验证使用独立 worktree/snapshot，源码变化后旧证据作废。Explorer/Reviewer 不编辑；Verifier 只允许约定的临时构建产物、缓存和日志，不得主动修改源码、配置或用户内容。这些是行为规则，不是独立文件系统 sandbox。
 
-同时要求：
+按 `agent_type` 选择长期角色，不重复传模型/推理参数。自包含任务在客户端支持且可靠时优先 `fork_turns="none"`，否则只传最小必要历史。大输出留文件，机械轮询合并执行，不无故重复验证，长会话保留 checkpoint。
 
-```text
-追真实 execution path
-返回 file / symbol evidence
-区分 confirmed facts / hypotheses
-找最小修改边界
-不改文件
-不做 speculative refactor
-不递归 spawn
-只返回 findings / evidence / risks / unknowns
-```
+源码相关验证按**阶段**执行：每个必需阶段是一个 argv 命令，由 `.codex/foundry-verifier-run.py` 独立执行。runner 会拒绝 shell `-c` 命令字符串，避免把必需阶段藏在 `&&`、`||`、pipeline 或尾部 summary 中。多阶段任务逐阶段执行，出现第一个 FAIL/INDETERMINATE 就停止。单阶段 PASS 必须同时满足工具退出码 0 与最终 `FOUNDRY_RESULT_V1 exit_code=0 status=PASS`；整体 PASS 要求所有指定阶段都 PASS。Root 必须读取每个阶段的日志 footer，并确认所有指定阶段真实执行。Agent 结论一致不等于正确。
 
-这样有三个直接收益。
+## 安装、更新、卸载
 
-### 1）不再创造平行角色名
+维护脚本要求 **Python 3.11+**。系统 `python3` 较旧时，显式使用已有的 3.11+ 解释器。两个入口会在导入 `tomllib` 前给出版本错误。
 
-以前：
-
-```text
-built-in explorer
-Foundry repo_explorer
-```
-
-语义很接近，Root 还要选择到底用谁。
-
-现在：
-
-```text
-explorer
-→ Codex 原生 vocabulary
-→ Foundry 只覆盖成本和输出 contract
-```
-
-### 2）Explorer 的成本可以独立控制
-
-Root 可能使用更强、更贵的模型；Explorer 大多数工作是：
-
-```text
-grep / symbol lookup
-调用链追踪
-测试定位
-依赖 / ownership 调查
-证据收集
-```
-
-所以 Foundry 当前固定：
-
-```text
-explorer → gpt-5.6-terra / medium
-reviewer → gpt-5.6 / high
-```
-
-而不是用全局：
-
-```toml
-[agents]
-default_subagent_model = "..."
-```
-
-把 `worker` 和其他未 pin 的 Subagent 一起降档。
-
-### 3）行为比泛化 built-in 更稳定
-
-Foundry 明确要求证据导向、不改代码、不递归 delegation。这样 Root 收到的是 investigation evidence，而不是第二个偷偷开始实现的 writer。
-
-需要明确一个边界：当前 Codex 的 agent role 不会把 `sandbox_mode` 应用成独立的 child 文件系统 sandbox。role 可以固定 model / reasoning effort / instructions / features / skills 等受支持字段，但 spawned child 的 permission/sandbox profile 会继承当前 parent session。因此 Explorer / Reviewer 的“不写文件”是**行为与编排契约**，不是独立 sandbox 强制。如果需要硬隔离，应在 parent session/runtime 层设置权限。
-
----
-
-## 5. 一个重要区别：requested model ≠ 已证明的 resolved model
-
-`explorer.toml` 写：
-
-```text
-Terra / medium
-```
-
-能证明的是：
-
-> **Foundry 请求并配置了 Terra / medium。**
-
-不能仅靠 TOML 证明：
-
-> **你当前安装的每一个 Codex release / execution path 里，实际 spawned child 一定最终 resolved 到 Terra / medium。**
-
-原因是 Subagent model routing 在历史 release 中出现过 bug，不同 Codex 版本的实际行为不能只靠配置文件推断。
-
-所以 Foundry 把两层严格区分：
-
-```text
-静态配置验证
-→ explorer.toml = Terra / medium
-
-真实运行验证
-→ child 最终 resolved model / effort
-→ 只有 Codex 提供稳定、机器可读的 spawned-thread metadata 时才能可靠证明
-```
-
-现在的：
+在 Foundry checkout 中执行：
 
 ```bash
-verify.py --runtime-check
+SKILL=.agents/skills/install-codex-agent-foundry
+python3 "$SKILL/scripts/install.py" /path/to/repo --check
+python3 "$SKILL/scripts/install.py" /path/to/repo
+python3 "$SKILL/scripts/verify.py" /path/to/repo
 ```
 
-会显示配置中的 Explorer / Reviewer model + effort，也会检查 `codex --version`，但会明确写：
+先检查计划中的模型、推理强度、所有改动、备份及冲突，再应用。目标仓库安装 AGENTS 管理区块、`.codex/config.toml`、三个 `.codex/agents/*.toml`、`.codex/foundry-verifier-run.py` 和 `.codex/.agent-foundry.json`。完成后在目标仓库启动**新 Codex 会话**。
 
-```text
-resolved child model/effort: not verified
-```
-
-Foundry 宁可承认“目前不可观测”，也不把静态配置包装成真实 runtime 保证。
-
-另外，本次迁移**不同时把 medium 改成 low**。角色身份迁移和 reasoning 质量调整是两个变量；如果未来 eval 证明 Terra / low 足够，再单独修改。
-
----
-
-## 6. 为什么还保留 custom `reviewer`？
-
-Codex 有 `/review`，但两者工作流边界不同。
-
-### `/review` / `codex review`
-
-更像：
-
-```text
-人：
-“Review 当前 working tree / branch / commit。”
-```
-
-这是原生显式 Review workflow。
-
-### Foundry `reviewer`
-
-是 Root 可以嵌进完整多 Agent 流程的节点：
-
-```text
-explorer 调查
-      ↓
-Root / Worker 实现
-      ↓
-reviewer 独立 cold review
-      ↓
-Root 消化 findings
-      ↓
-修复 / 验证 / 收口
-```
-
-它在行为上要求不修改文件，并固定强模型/high reasoning，只看 material correctness / regression / security / state / tests 问题，不自己修 finding，也不继续 spawn。
-
-真正价值是：
-
-> **尽量制造一个和 writer 独立的 cold context。**
-
-它不是 `/review` 的替代品；两者是不同入口。
-
----
-
-## 7. 为什么没有长期 `implementer`？
-
-Codex 已有 built-in `worker`。
-
-更重要的是：实现属于 **write-heavy** 工作。
-
-多个 writer 在同一个 checkout 会增加：
-
-- 写冲突；
-- stale context；
-- 基于旧代码继续工作；
-- ownership 不清；
-- merge / integration 成本。
-
-所以：
-
-```text
-小型 / 强耦合实现
-→ Root 自己写
-
-较大但边界明确
-→ built-in worker 可以接管
-
-多个 substantial write 真要并行
-→ 分开 Git worktree
-```
-
-Worker 只有在 `scope / ownership / behavior / constraints / acceptance / validation` 都清楚时才值得委派。
-
----
-
-## 8. 为什么没有长期 `tester`？
-
-“测试”不是稳定统一的跨项目能力，它可能是：
-
-```text
-unit / integration tests
-compiler diagnostics
-browser reproduction
-CI logs
-benchmark
-migration validation
-flaky-test triage
-```
-
-generic `tester.toml` 很容易最后只剩一句“跑测试并汇报”。
-
-Foundry 选择：
-
-```text
-小型 / 关键验证
-→ Root
-
-大型 / noisy / 独立验证
-→ 临时 verifier
-
-反复出现的特殊验证能力
-→ 再考虑真正 custom specialist
-```
-
-例如有固定 browser tooling 的 browser debugger，就比 generic tester 更值得长期存在。
-
----
-
-## 9. 为什么 Planner / Architect 留在 Root？
-
-Root 拥有：
-
-```text
-用户目标
-+ 对话历史
-+ requirements
-+ repository evidence
-+ Subagent 结果
-+ 实现状态
-+ final diff
-+ tests / build / logs
-```
-
-如果强制：
-
-```text
-User → Root → Planner → Architect → Worker → Reviewer → Root
-```
-
-会增加上下文转述，也会让“谁负责最终判断”变模糊。
-
-所以 Foundry 选择：
-
-> **高层判断留在拥有最多上下文的 Root；Subagent 主要提供隔离证据、独立判断和边界明确的执行。**
-
----
-
-## 10. 更深层原则：Read 并发便宜，Write 并发昂贵
-
-行为上 no-write 的 Agent 可以独立收集证据，不应修改共享 source state；主要成本只是 Root 最后汇总。这里的 no-write 是编排契约，不是独立 per-role sandbox 保证。
-
-Write-heavy Agent 则额外需要处理：
-
-```text
-state coordination
-stale assumptions
-ownership
-merge / integration
-```
-
-因此：
-
-- 一个 checkout 同时只有一个 source-code writer；
-- read-only Agent 可以并行；
-- substantial parallel writes 使用不同 worktree；
-- Root 最终负责 integration。
-
-这也是为什么长期 Agent 名额优先给 Explorer / Reviewer 这类只读 specialist。
-
----
-
-## 11. 什么情况下才新增第三个长期 Agent？
-
-最好满足大部分条件：
-
-1. **高频**：很多重要任务反复需要；
-2. **边界稳定**：Mission 能长期写得很窄；
-3. **可重复收益**：不是一次性便利；
-4. **隔离有价值**：独立 context 真能改善质量或减少噪声；
-5. **固定配置有意义**：model / effort / MCP / tools / skills 等当前真正受支持的 role 设置值得固定；
-6. **ownership 清楚**：不会制造不必要的 writer 冲突；
-7. **built-in / temporary delegation 不够**：确实存在稳定 specialization；
-8. **可以 eval**：能写场景说明什么时候该调用、改善了什么。
-
-可能合理的未来角色：browser debugger、绑定稳定 docs MCP 的 docs researcher、特殊 security/database specialist。
-
-默认不因为名字听起来像软件团队职位，就加入 `architect / implementer / tester / researcher`。
-
----
-
-## 12. Runtime 最重要的规则
-
-真正的 policy 在：
-
-[`runtime/AGENTS.fragment.md`](./runtime/AGENTS.fragment.md)
-
-核心规则：
-
-1. Root 保留目标、拆解、架构、集成、最终验证和最终答案。
-2. Root 默认写代码。
-3. 一个 checkout 同时一个 writer。
-4. substantial parallel writes 用不同 worktree。
-5. 默认一层 fan-out / fan-in。
-6. Subagent 默认不继续递归 spawn，除非 Root 为具体 mission 明确授权。
-7. 每个 delegated mission 至少说明 goal、scope/ownership、constraints、acceptance evidence、expected return、stop condition。
-8. Agent 互相同意不等于正确，最终回到 diff / tests / build / logs / source / reproduction 等证据。
-
-`evals/scenarios.json` 当前表达：
-
-```text
-很小、范围明确的修改
-→ Root only
-
-跨模块 bug，execution path 不清楚
-→ explorer → Root 实现 → reviewer
-
-边界清楚的机械实现
-→ worker 可实现 → reviewer → Root 验证
-
-大型 / noisy verification
-→ 临时 verifier
-
-两个 substantial write 要并行
-→ 分开 worktree
-```
-
----
-
-## 13. 仓库结构
-
-```text
-codex-agent-foundry/
-├── runtime/                       # 核心产品 / 唯一 source of truth
-│   ├── AGENTS.fragment.md
-│   └── .codex/
-│       ├── config.toml
-│       └── agents/
-│           ├── explorer.toml      # 覆盖 Codex built-in explorer
-│           └── reviewer.toml
-├── evals/                         # policy contract
-├── .agents/skills/
-│   └── install-codex-agent-foundry/
-│       ├── SKILL.md
-│       ├── scripts/install.py
-│       ├── scripts/verify.py
-│       ├── assets/project/        # runtime/ 自动生成发布副本
-│       └── references/design.md
-├── scripts/package_runtime.py
-├── tests/
-├── .github/workflows/test.yml
-└── AGENTS.md                      # 开发 Foundry 自己时使用
-```
-
-`runtime/` 与 `assets/project/` 的重复是有意的：
-
-```text
-runtime/                         ← 人修改的 source
-   ↓ package_runtime.py
-Skill/assets/project/            ← 自动生成的 distribution copy
-```
-
-只有 `runtime/` 是 source of truth。
-
----
-
-## 14. Python 版本要求
-
-Installer 和 verifier 要求 **Python 3.11+**，因为使用标准库 `tomllib`。
-
-Ubuntu 22.04 默认常见是 Python 3.10。两个入口脚本都会在导入 `tomllib` 前检查版本，因此旧版本会得到清晰提示，而不是：
-
-```text
-ModuleNotFoundError: No module named 'tomllib'
-```
-
----
-
-## 15. 安装 / 更新
-
-先 dry-run：
+模型覆盖只影响对应角色：
 
 ```bash
-python3 .agents/skills/install-codex-agent-foundry/scripts/install.py \
-  /path/to/repo \
-  --check
+python3 "$SKILL/scripts/install.py" /path/to/repo \
+  --explorer-model <model> --reviewer-model <model> --verifier-model <model>
 ```
 
-PLAN 顶部会显示：
+选择保存在 state 中。未显式指定 Reviewer 模型时，历史值 `gpt-5.6` 会迁至当前默认值；其他模型选择保留。Luna Verifier 无法启动时，由 Root 本次执行验证，或显式改为 `--verifier-model gpt-5.6-terra`。不静默换模型，也不全局降低子 Agent 模型。实际可用性取决于账户和客户端，配置不等于权限证明。
 
-```text
-Selected agents:
-- explorer: gpt-5.6-terra / medium
-- reviewer: gpt-5.6 / high
-```
-
-确认后安装并验证：
+卸载同样先预览：
 
 ```bash
-python3 .agents/skills/install-codex-agent-foundry/scripts/install.py /path/to/repo
-python3 .agents/skills/install-codex-agent-foundry/scripts/verify.py /path/to/repo
+python3 "$SKILL/scripts/install.py" /path/to/repo --uninstall --check
+python3 "$SKILL/scripts/install.py" /path/to/repo --uninstall
 ```
 
-安装成功后会提示：
+外部同名 profile 默认阻塞安装；只有明确授权 `--force` 才备份后替换。当前 v3 state 会记录三个 profile 与 Verifier runner 的 SHA-256 指纹；手工漂移会阻塞更新和卸载，不再被静默覆盖或删除。只有明确授权时，`--force` 才会备份后替换漂移的托管路径。
 
-```text
-Start a new Codex session in this project to load Foundry.
-```
+对于指纹机制引入前创建的 v3 安装：如果文件已经等于新模板，可以直接纳入新指纹；如果内容不同，则升级会先阻塞，因为 Installer 无法安全区分“旧模板差异”和“用户手改”，检查后需显式 `--force` 才建立新基线。
 
-新安装目标项目大致是：
+`.codex/config.toml` 的编辑还会做解析后的语义检查：修改前后只允许 `agents.max_concurrent_threads_per_session` 发生预期变化；多行字符串里的 `[agents]` 或类似文本不会被当成真实配置。边界见 [生命周期说明](.agents/skills/install-codex-agent-foundry/references/design.md)。
 
-```text
-your-project/
-├── AGENTS.md
-└── .codex/
-    ├── config.toml
-    ├── .agent-foundry.json
-    └── agents/
-        ├── explorer.toml
-        └── reviewer.toml
-```
+## 迁移与来源
 
-### 模型覆盖
+v1 的 `repo_explorer` 迁为 `explorer`；v2 升级增加 Verifier。v1/v2 历史模板保持原样，并以固定哈希保护，供 ownership、drift 和卸载检查使用。漂移阻塞迁移，不能修改历史模板来“修好”测试。
 
-```bash
-python3 .../install.py /path/to/repo \
-  --explorer-model <model> \
-  --reviewer-model <model>
-```
+State v3 记录角色/模型、并发配置归属、runtime 版本、`source_revision`、`runtime_sha256`，以及当前三个 profile 和 Verifier runner 的 `managed_sha256`。只有干净的 Foundry checkout 且 runtime 与发布副本一致时才记录 revision；复制安装的 Skill 记为 `unknown`，不会误记目标仓库提交。无法证明 Git 来源时，以内容哈希和托管文件指纹为准。
 
-选择会写进 state，后续 update 会保留，除非显式换模型。
+## 验证边界
 
----
+`verify.py` 检查路径、state、TOML、profile、Verifier runner 和漂移；`--runtime-check` 额外检查 Codex CLI/version 并报告配置模型。它们不证明账户可用性、新会话加载成功、实际 child 模型、Mission 是否遵守，或目标项目构建通过。
 
-## 16. v1 升级：`repo_explorer` → `explorer`
+[Forward eval](evals/README.md) 才检查实际角色派发、ownership、Mission 和验证证据。CI 不能替代真实模型验证。
 
-Foundry v1 安装的是：
+## 开发
 
-```text
-.codex/agents/repo_explorer.toml
-```
+| 路径 | 用途 |
+| --- | --- |
+| `runtime/` | 安装到项目的规范、角色配置和确定性 Verifier runner 源。 |
+| `.agents/skills/install-codex-agent-foundry/` | 维护流程、脚本、历史模板、生成的 `assets/project/`。 |
+| `evals/` | 行为场景和评估方法。 |
+| `scripts/`、`tests/`、`.github/workflows/` | 打包、回归测试、CI。 |
+| 根 `AGENTS.md` | 开发 Foundry 自身的规则，不是分发的运行规则。 |
 
-v2 改成：
-
-```text
-.codex/agents/explorer.toml
-```
-
-不是简单 rename，而是 ownership-safe migration。
-
-Installer 会：
-
-- 从 v1 state 读取旧 Explorer model override，并迁移到新 `explorer`；
-- 只有旧 `repo_explorer.toml` 仍然是 Foundry-managed、且内容和旧 state 记录完全一致时才删除；
-- 如果旧 profile 被用户改过，整个 PLAN 阻塞，零写入；
-- 如果已经有用户自己的 `explorer.toml`，默认整个 PLAN 阻塞；
-- 只有用户明确 `--force` 时，才 backup foreign `explorer.toml` 后接管；
-- 如果没有匹配的 v1 state，只有带 Foundry 管理标记的 orphan `repo_explorer.toml` 才会阻塞人工检查；用户自己的同名 legacy 文件会保留且不影响 v2；
-- v1 uninstall 仍然支持，并使用 Installer Skill 内冻结的 v1 profile fixture 校验旧文件。
-
-所以升级前仍然先运行：
-
-```bash
-python3 .../install.py /path/to/repo --check
-```
-
-### State v2
-
-新的 state 语义：
-
-```json
-{
-  "version": 2,
-  "runtime_version": "2",
-  "managed_agents": ["explorer.toml", "reviewer.toml"],
-  "models": {
-    "explorer": "gpt-5.6-terra",
-    "reviewer": "gpt-5.6"
-  },
-  "source_revision": "...",
-  "runtime_sha256": "..."
-}
-```
-
-`source_revision` 采用保守证明：只有 Installer 能确认自己运行在干净的 Foundry checkout 中，并且 `runtime/` 与打包 assets 一致时才记录 commit；Skill 被复制进普通目标 Git 仓库时会写 `unknown`，不会误记目标项目的 commit。`runtime_sha256` 是确定性的 Runtime 内容指纹，在无法证明 Git 来源时仍是权威依据。
-
----
-
-## 17. 验证
-
-普通验证：
-
-```bash
-python3 .../verify.py /path/to/repo
-```
-
-检查 managed paths、state schema、AGENTS managed block、TOML、profile/model override 和 drift。
-
-额外环境检查：
-
-```bash
-python3 .../verify.py /path/to/repo --runtime-check
-```
-
-还会检查：
-
-- `codex` 是否在 PATH；
-- `codex --version`；
-- 本地 config/profile 严格 TOML 解析；
-- Explorer / Reviewer 配置中的 model + reasoning effort。
-
-但明确**不会声称**已经验证：
-
-- 账户一定能用这些模型；
-- 新 Codex session 已成功加载全部项目配置；
-- 实际 spawned Explorer child 最终 resolved 到配置中的 model/effort。
-
-最后一项只有在 Codex 提供稳定可观测的 spawned-thread runtime metadata 后，才能可靠做成硬验证。
-
----
-
-## 18. 卸载
-
-```bash
-python3 .../install.py /path/to/repo --uninstall --check
-python3 .../install.py /path/to/repo --uninstall
-```
-
-卸载只处理 Foundry-owned 内容，保留无关项目配置；managed profile 如果 drift，会拒绝删除。v1 state 的卸载也继续支持。
-
----
-
-## 19. 开发与验证
-
-修改协作行为时先改 `runtime/`；routing 预期变化时同步改 `evals/`。
+只改 `runtime/`，再生成发布副本，不独立编辑 assets。精简时保留完整安全条件；[设计理由](.agents/skills/install-codex-agent-foundry/references/design.md) 按需阅读，不要求每次会话加载。
 
 ```bash
 python3 scripts/package_runtime.py
@@ -693,8 +98,6 @@ python3 -m unittest discover -s tests -v
 python3 -m compileall -q .agents/skills/install-codex-agent-foundry/scripts scripts tests
 ```
 
-CI 在 Python 3.11 / 3.12 / 3.13 跑完整测试，并额外用 Python 3.10 验证版本提示。
+CI 覆盖 Python 3.11/3.12/3.13，另用 3.10 检查版本保护。测试覆盖历史 fixture、生命周期安全、TOML 语义保持、托管内容漂移、确定性 Verifier 执行、静态契约和提示词大小；这些仍不等于真实 Agent 行为已经验证。
 
-完整设计记录：[`references/design.md`](./.agents/skills/install-codex-agent-foundry/references/design.md)
-
-官方参考：[Subagents](https://developers.openai.com/codex/subagents) · [Developer commands / review](https://developers.openai.com/codex/cli/slash-commands) · [Build skills](https://developers.openai.com/codex/skills)
+官方参考：[Subagents](https://developers.openai.com/codex/subagents) · [AGENTS.md](https://developers.openai.com/codex/guides/agents-md) · [Skills](https://developers.openai.com/codex/skills) · [Review](https://developers.openai.com/codex/cli/slash-commands)

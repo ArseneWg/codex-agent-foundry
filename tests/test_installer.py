@@ -193,6 +193,7 @@ class InstallerPlanTests(unittest.TestCase):
             self.assertFalse((root / ".codex/.agent-foundry.json").exists())
             self.assertFalse((root / ".codex/agents/reviewer.toml").exists())
             self.assertFalse((root / ".codex/agents/explorer.toml").exists())
+            self.assertFalse((root / ".codex/agents/verifier.toml").exists())
             cfg = root / ".codex/config.toml"
             self.assertFalse(cfg.exists())
 
