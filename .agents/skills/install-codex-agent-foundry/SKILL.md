@@ -43,6 +43,8 @@ The default Verifier is `gpt-5.6-luna` / `low`. Spawn persistent Foundry agents 
 - Keep the relevant source state stable during same-checkout verification. If Root must keep editing relevant source, use a separate worktree/snapshot; discard validation evidence if its source state changed underneath it.
 - Aggregate polling into one bounded shell/program loop when no fresh model judgment is needed per sample.
 - Keep large stdout/stderr in files and return bounded evidence plus a log path.
+- Verifier must mechanically capture the exact validation command's exit status before any logging/timing/follow-up command, append a final `FOUNDRY_RESULT_V1 exit_code=<n> status=<PASS|FAIL>` footer, and return the same process status. Pipelines/shell sequences must use failure-preserving semantics such as `bash -o pipefail -e -c`.
+- Missing, malformed, conflicting, or mismatched footer/tool status is `INDETERMINATE`, never PASS. Before Root accepts a delegated PASS as completion evidence, Root must read the referenced log's final `FOUNDRY_RESULT_V1` footer and confirm `exit_code=0 status=PASS`.
 - Avoid deterministic reruns when relevant state has not changed.
 - Explorer and Reviewer are behaviorally no-write. Verifier is source-preserving: normal transient build/test artifacts, caches, and designated logs are allowed, but source/project configuration/user content must not be intentionally modified.
 - These are behavioral contracts, not independent filesystem sandboxes; hard isolation comes from parent session/runtime permissions.
@@ -58,4 +60,4 @@ The default Verifier is `gpt-5.6-luna` / `low`. Spawn persistent Foundry agents 
 
 For removal, run `scripts/install.py <target> --uninstall --check` before `--uninstall`.
 
-Read `references/design.md` when changing runtime behavior, role identity, model routing, history policy, verification-state ownership, migration semantics, or installer safety guarantees.
+Read `references/design.md` when changing runtime behavior, role identity, model routing, history policy, verification-state ownership, verification-result integrity, migration semantics, or installer safety guarantees.
