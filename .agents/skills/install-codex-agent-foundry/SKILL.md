@@ -1,75 +1,29 @@
 ---
 name: install-codex-agent-foundry
-description: Install, update, inspect, verify, migrate, or uninstall Codex Agent Foundry in a target repository. Use when a user wants workload-aware Codex multi-agent policy, project .codex configuration, explorer/reviewer/verifier profiles, safe upgrades, model overrides, runtime checks, or conservative removal without overwriting unrelated project configuration.
+description: Install, update, inspect, verify, migrate, or uninstall Codex Agent Foundry in a repository, including role model overrides and conservative conflict handling. Not a general coding or review skill.
 metadata:
   version: "3"
 ---
 
 # Install Codex Agent Foundry
 
-Use this Skill only to distribute or maintain the Foundry orchestration runtime. The runtime policy itself lives in the bundled project assets and defines how Codex agents collaborate.
-
-Foundry v3 keeps Root as the final owner and uses three narrow project profiles: `explorer` for investigation, `verifier` for bounded noisy/repetitive validation, and `reviewer` for cold review. `worker` remains Codex built-in and on demand.
-
-## Requirements
-
-- Run the installer and verifier with Python 3.11 or newer.
-- Ubuntu 22.04 commonly provides Python 3.10 by default; use an explicit Python 3.11+ interpreter there.
-
-Both entry scripts check the interpreter version before importing `tomllib` and return a clear error on older Python versions.
+Maintain the Foundry runtime; do not act as its dispatcher. Collaboration rules and role contracts live in the bundled runtime, not this installation workflow.
 
 ## Workflow
 
-1. Resolve the target repository and inspect existing `AGENTS.md`, `.codex/config.toml`, `.codex/agents/`, and Foundry state.
-2. Run `scripts/install.py <target> --check` first. The plan must show every path and the selected Explorer/Reviewer/Verifier model and effort.
-3. Explain conflicts. Do not silently overwrite foreign same-name profiles.
-4. Apply with `scripts/install.py <target>`, then run `scripts/verify.py <target>`.
-5. When requested, run `scripts/verify.py <target> --runtime-check`. It checks Codex CLI/version and configured role models; it does not prove account entitlement or resolved child models.
-6. Tell the user to start a new Codex session in the target project.
+Use Python 3.11+ explicitly when `python3` is older. Resolve the target repository from the request; inspect its `AGENTS.md`, `.codex/config.toml`, agent profiles, and Foundry state.
 
-Model overrides are role-specific:
+1. Preview: `python3 scripts/install.py <target> --check`. Explain conflicts and check every planned path, backup, and selected role model/effort.
+2. Apply the matching options: `python3 scripts/install.py <target>`, then `python3 scripts/verify.py <target>`.
+3. When requested, add `--runtime-check` to verification. It checks local configuration and CLI/version, not account model access, session loading, or actual child model/effort.
+4. Report changes, preserved content, and unresolved conflicts. Start a new Codex session in the target project to load the updated runtime.
 
-```bash
-scripts/install.py <target>   --explorer-model <model>   --reviewer-model <model>   --verifier-model <model>
-```
+Resolve script paths relative to this Skill. For removal, preview `install.py <target> --uninstall --check` before applying `--uninstall`.
 
-The default Verifier is `gpt-5.6-luna` / `low`. Spawn persistent Foundry agents by role and let their role profiles own model/reasoning settings; do not pass an explicit spawn-time Luna model merely to restate `verifier.toml`. Some MultiAgent V2 client/model-catalog combinations reject Luna as an explicit spawn-time model override even when a custom role can apply it. If the configured Verifier role itself cannot spawn, use Root for that session or explicitly reinstall/reconfigure with `--verifier-model gpt-5.6-terra`; do not silently fall back to another model.
+## Options and boundaries
 
-## Workload-aware runtime rules
+`--explorer-model`, `--reviewer-model`, and `--verifier-model` change only the named role and are recorded in state. Default profiles are Explorer Terra/medium, Reviewer Terra/high, and Verifier Luna/low. Spawn by role, without redundant model overrides. A Verifier compatibility error requires Root-direct validation or an explicit `--verifier-model gpt-5.6-terra`; never silently switch models.
 
-- Do not spawn Verifier for one short deterministic command merely to use a cheaper model.
-- Use Verifier for long/noisy builds, tests, logs, device/environment checks, waits, or repeated polling that can run independently.
-- Prefer minimal-history missions. When supported and self-contained, use `fork_turns = "none"`; if a client release fails no-history task delivery, use the smallest useful last-N history rather than full history.
-- Keep the relevant source state stable during same-checkout verification. If Root must keep editing relevant source, use a separate worktree/snapshot; discard validation evidence if its source state changed underneath it.
-- Aggregate polling into one bounded shell/program loop when no fresh model judgment is needed per sample.
-- Keep large stdout/stderr in files and return bounded evidence plus a log path.
-- Verifier must mechanically capture the exact validation command's exit status before any logging/timing/follow-up command, append a final `FOUNDRY_RESULT_V1 exit_code=<n> status=<PASS|FAIL>` footer, and return the same process status. Pipelines/shell sequences must use failure-preserving semantics such as `bash -o pipefail -e -c`.
-- Missing, malformed, conflicting, or mismatched footer/tool status is `INDETERMINATE`, never PASS. Before Root accepts a delegated PASS as completion evidence, Root must read the referenced log's final `FOUNDRY_RESULT_V1` footer and confirm `exit_code=0 status=PASS`.
-- Avoid deterministic reruns when relevant state has not changed.
-- Explorer and Reviewer are behaviorally no-write. Verifier is source-preserving: normal transient build/test artifacts, caches, and designated logs are allowed, but source/project configuration/user content must not be intentionally modified.
-- These are behavioral contracts, not independent filesystem sandboxes; hard isolation comes from parent session/runtime permissions.
+Preserve unrelated project content and user concurrency. Use `--force` only with explicit authorization to back up and replace foreign same-name profiles. A blocked plan must write nothing. v1/v2 migration and uninstall rely on frozen historical fixtures; never edit those fixtures to make a check pass. The historical Reviewer default migrates to Terra; non-default model selections are retained.
 
-## Mission preflight
-
-Before `spawn_agent`, Root performs a lightweight role-specific semantic preflight. This is not a required JSON/schema or fixed message format.
-
-- Fill missing details from already-known task state instead of asking the user merely to satisfy a checklist.
-- Do not invent unknown ownership, commands, baselines, acceptance criteria, or validation scope.
-- If a safety-critical detail still cannot be determined, keep that work with Root until the mission is bounded enough to delegate.
-- Explorer requires goal, scope, evidence needed, and stop condition.
-- Reviewer requires review target/baseline, scope, materiality focus, and stop condition; its profile already owns the normal finding format.
-- Worker requires goal, write scope plus exclusive ownership, constraints, acceptance criteria, expected validation, and stop condition.
-- Verifier requires exact command, cwd, validation baseline, artifact/log policy including log path, and stop condition; its machine-result protocol remains a role-level invariant rather than repeated mission boilerplate.
-
-## Lifecycle safety
-
-- v1 `repo_explorer` migration and v1 uninstall remain supported with frozen v1 fixtures.
-- v2 Explorer/Reviewer upgrade and v2 uninstall remain supported with frozen v2 fixtures.
-- CI pins hashes for the frozen v1/v2 lifecycle fixtures so accidental historical-template edits fail validation.
-- v3 adds `verifier.toml`; a foreign same-name Verifier blocks unless the user explicitly authorizes `--force` backup + replacement.
-- Update managed profiles only when ownership is established; preserve unrelated project configuration.
-- State records runtime version, role model selections, conservative source revision, and deterministic runtime SHA-256.
-
-For removal, run `scripts/install.py <target> --uninstall --check` before `--uninstall`.
-
-Read `references/design.md` when changing runtime behavior, role identity, model routing, history policy, mission preflight, verification-state ownership, verification-result integrity, migration semantics, or installer safety guarantees.
+Read `references/design.md` only when changing or investigating runtime, model routing, mission preflight, evidence integrity, lifecycle, or provenance. `runtime/` is canonical in the Foundry source repository; generate `assets/project/` with `scripts/package_runtime.py`, never edit it independently.

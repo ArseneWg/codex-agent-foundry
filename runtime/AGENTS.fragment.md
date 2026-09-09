@@ -1,82 +1,53 @@
 ## Codex Agent Foundry
 
-The root agent owns the goal, requirements, decomposition, architecture decisions, integration, validation responsibility, and the final answer. The root is the default source-code writer.
+Root owns the goal, requirements, planning, architecture, integration, validation, and final answer. The root is the default source-code writer. Delegate only when independent work, parallel latency savings, or context/noise isolation outweigh handoff cost. Keep a single short deterministic command with Root.
 
-Delegate only when parallelism, context isolation, or noise isolation has a material benefit that outweighs the extra agent overhead. Do not delegate a single short deterministic command merely to use a cheaper model; when Root already knows the exact command and the output is small, Root should run it directly.
+### Routing and models
 
-### Persistent specialist profiles
+- `explorer`: no-edit investigation of code paths, ownership, dependencies, and tests; return evidence and unknowns. This project profile overrides the built-in Explorer.
+- `reviewer`: independent cold review after material implementation; focus on correctness, regressions, security, state/concurrency, and meaningful test gaps.
+- `verifier`: execute bounded long/noisy builds, tests, logs, environment/device checks, waits, and polling. Return evidence; leave diagnosis and fixes to Root.
+- Built-in `worker`: bounded implementation on demand. Keep planning/architecture with Root and narrow research on demand; add no standing Planner/Dispatcher.
 
-- Use `explorer` for no-write codebase investigation when behavior, ownership, dependencies, tests, or call paths are unclear. This project-scoped profile intentionally overrides Codex's built-in `explorer` so Foundry can pin a no-write evidence contract plus model/reasoning defaults.
-- Use `verifier` for bounded, independently runnable, noisy or repetitive verification: builds, tests, CI/log analysis, device/environment checks, waits, and polling. Verifier executes and reports evidence; it does not diagnose broadly, modify source/project configuration, or fix failures. Validation commands may create their normal transient build/test artifacts, caches, and designated log files.
-- Use `reviewer` after a material implementation for an independent cold review of correctness, regressions, security, concurrency/state risks, and meaningful test gaps.
-
-Explorer and Reviewer are behaviorally no-write. Verifier is behaviorally source-preserving: it may produce validation artifacts and logs but must not intentionally change source, project configuration, or user-owned content. Current Codex spawned roles inherit the live parent session permission/sandbox profile, so these collaboration rules are not independent per-role sandbox boundaries.
-
-### Role selection and model routing
-
-Spawn persistent Foundry profiles by role (`agent_type`) and let the profile own its configured model and reasoning effort. Do not pass a spawn-time model or reasoning-effort override merely to restate a persistent profile.
-
-In particular, spawn Verifier as `agent_type = "verifier"` without an explicit `model = "gpt-5.6-luna"` override. Some MultiAgent V2 client/model-catalog combinations reject Luna as an explicit spawn-time model override even when a custom role can apply Luna successfully. If the configured Verifier role itself cannot spawn on an installed client, do not silently change models mid-task: Root should run the validation directly for that session or the user can reinstall/reconfigure with `--verifier-model gpt-5.6-terra`.
-
-### Minimal-history delegation
-
-Give every subagent only the history required for its mission. When the client supports `fork_turns`, prefer `fork_turns = "none"` for self-contained Explorer, Verifier, and Reviewer missions and pass the needed goal, paths, commands, constraints, and evidence explicitly. When prior turns are genuinely required, use the smallest useful positive last-N value. Full-history forks are exceptional and should be justified by a mission that truly depends on broad conversation history.
-
-Client compatibility is part of this rule: if an installed Codex release fails to deliver a self-contained mission correctly with no-history spawning, retry with the smallest useful last-N history rather than silently escalating to full history.
-
-### Verification state ownership and output discipline
-
-- Keep short deterministic validation with Root when spawning a subagent would cost more than the command itself.
-- Delegate long-running, noisy, repetitive, or independently running validation to `verifier` with an exact command/scope, validation baseline, and stop condition.
-- When Verifier runs in the same checkout, Root must keep the relevant source state stable until Verifier returns. If Root needs to continue changing relevant source, run verification from a separate worktree or other immutable snapshot.
-- If relevant source state changes during a same-checkout verification, discard that evidence and rerun the required validation against the final state.
-- For polling that does not require fresh model judgment on every observation, use one bounded shell/program loop and return the terminal condition instead of repeated model-tool turns.
-- Keep large build, test, device, and log output in files when practical. Prefer logs outside source-owned paths. Return bounded evidence rather than full logs.
-- Do not repeat a deterministic build/test/check without a relevant state change, a plausibly transient failure, or an explicit reason.
-- On failure, Verifier stops and returns evidence to Root. Root decides whether diagnosis needs Explorer, a stronger model, implementation, or a rerun.
-
-### Machine-verifiable verification results
-
-Verifier must mechanically preserve the exact validation command's real exit status before logging, timing, formatting, cleanup, or summary work can replace it. Pipelines or shell sequences must use failure-preserving semantics. The detailed wrapper belongs to the persistent Verifier role profile rather than each individual mission.
-
-The final `FOUNDRY_RESULT_V1` line in the log is authoritative machine evidence. The canonical successful footer is `FOUNDRY_RESULT_V1 exit_code=0 status=PASS`. Any nonzero status is FAIL. Missing, malformed, conflicting, or mismatched footer/tool status is INDETERMINATE and must never be reported or accepted as PASS.
-
-Verifier must return the literal final footer and log path. Before Root uses a delegated PASS as completion evidence, Root must read the referenced log's final `FOUNDRY_RESULT_V1` line and confirm `exit_code=0 status=PASS`. Earlier footer-like text from the validation command is not authoritative; only the final wrapper-appended footer counts.
-
-### Evidence reuse and session lifecycle
-
-Prefer targeted reads and searches over broad transcript-sized output. Reuse evidence from unchanged files instead of repeatedly rereading the same content. Use narrow searches and bounded diagnostics before full-file/full-log output when those are sufficient.
-
-After a major milestone or repeated context compaction, Root should checkpoint the durable task state: goal, decisions, changed files, validation results, blockers, and next action. If stale tool history dominates the session, prefer continuing from that checkpoint in a fresh session instead of preserving an ever-growing transcript.
-
-### On-demand delegation
-
-- Bounded implementation may be delegated to a worker only when scope, write ownership, intended behavior, constraints, acceptance criteria, and expected validation are explicit. While that worker owns the change, the root must not edit the same checkout concurrently.
-- Narrow research may be delegated when it keeps substantial supporting material out of the root context.
-
-### Write ownership and spawn discipline
-
-Keep one source-code writer per checkout at a time. Source-preserving agents may run in parallel only when their evidence remains bound to stable relevant source state. For substantial parallel implementation, or for long verification while Root must continue relevant edits, use separate Git worktrees or independent snapshots.
-
-Default to one-level fan-out from the root and fan-in back to the root. Spawn the minimum number of agents that can produce meaningfully independent evidence or latency savings.
-
-Subagents must not spawn additional subagents by default. Only the root may explicitly authorize nested delegation for a specific mission when the extra coordination is justified.
+Spawn persistent profiles by `agent_type`; their profiles own model/effort. Do not pass a spawn-time model or reasoning-effort override merely to repeat the profile. Use `agent_type = "verifier"`, not an explicit Luna model override. If the configured role cannot start, report the error; no silent model fallback. Root may validate directly, or the installation may be explicitly changed with `--verifier-model gpt-5.6-terra`.
 
 ### Mission contract: role-specific preflight
 
-Before every `spawn_agent`, Root performs a lightweight semantic preflight for the selected role. This is a checklist for mission completeness, not a required JSON/schema or fixed serialization format. Keep missions in natural language and include extra context only when it materially helps the child.
+Before every `spawn_agent`, Root performs a lightweight semantic preflight. Use natural language, not a required JSON/schema or fixed template. Fill missing details from established task state; do not ask the user merely for checklist formatting or invent ownership, commands, baselines, or acceptance criteria. If a safety-critical detail remains unknown, keep that work with Root until resolved; this does not authorize unsafe execution.
 
-If a required detail is missing from the user's wording but is already established by the task state, Root should fill it in before spawning rather than interrupt the task to ask the user for checklist formatting. Do not invent unknown ownership, commands, baselines, or acceptance criteria. If a safety-critical detail still cannot be determined, keep that work with Root until the mission is bounded enough to delegate.
+| Role | Required task-specific information |
+| --- | --- |
+| Explorer | Goal; scope; evidence needed; stop condition. |
+| Reviewer | Review target/baseline; scope; materiality focus; stop condition. |
+| Worker | Goal; write scope and exclusive ownership; constraints; acceptance criteria; expected validation; stop condition. |
+| Verifier | Exact command; cwd; validation baseline; artifact/log policy including the log path; stop condition. |
 
-Required mission content is role-specific because delegation risk is asymmetric:
+Use the profiles' default finding format and machine-result protocol without repeating them in each mission. Supply relevant facts, paths, and constraints the child cannot otherwise know. Subagents return bounded evidence and must not broaden their mission.
 
-- **Explorer:** goal; scope; evidence needed; stop condition.
-- **Reviewer:** review target or baseline; scope; materiality focus; stop condition. The role profile already owns the finding format, so do not restate it unless the task needs a special output.
-- **Worker:** goal; write scope and exclusive ownership; constraints; acceptance criteria; expected validation; stop condition.
-- **Verifier:** exact command; cwd; validation baseline; artifact/log policy including the log path; stop condition. The machine-result/exit-code protocol is a persistent Verifier invariant and does not need to be recopied into every mission.
+Default to one-level Root fan-out/fan-in and the fewest useful agents. Subagents must not spawn additional subagents by default; nested delegation requires Root's explicit authorization for a specific mission.
 
-A subagent should return evidence and results, not silently broaden its mission.
+### Source and write ownership
 
-### Completion
+Keep one source-code writer per checkout. While Worker owns a checkout, Root must not edit that same checkout. For substantial parallel writes, use separate worktrees.
 
-Agent agreement is not evidence of correctness. Before declaring work complete, the root must inspect the final diff, confirm relevant validation evidence still matches the final source state, independently confirm the final machine footer for delegated PASS results, reconcile material reviewer findings, rerun critical checks when delegated evidence is incomplete, stale, inconsistent, or high-risk, and distinguish verified facts from unresolved assumptions.
+Explorer/Reviewer do not edit. Verifier preserves source, project configuration, and user content; normal transient build/test artifacts, caches, and designated logs may be allowed. These are behavioral contracts, not independent filesystem sandboxes; hard isolation comes from parent/runtime permissions.
+
+Source-preserving work may run concurrently only while relevant source state stays stable. During same-checkout validation, pause relevant writes. If Root must keep editing, use a separate worktree or other immutable snapshot. Bind evidence to the actual validation baseline, including relevant uncommitted changes. If that state changes during validation, discard that evidence and rerun required checks against the final state.
+
+### Machine-verifiable verification results
+
+Preserve the exact validation command's exit status before logging, timing, cleanup, or summary commands can replace it. Use failure-preserving pipeline/sequence handling; the Verifier profile contains the wrapper. Keep full output in a designated log, preferably outside source-owned paths.
+
+PASS requires tool/wrapper exit 0 and the final wrapper-appended footer `FOUNDRY_RESULT_V1 exit_code=0 status=PASS`. A nonzero validation exit is FAIL; missing, malformed, stale, or conflicting evidence is INDETERMINATE, never PASS. Return command, cwd, baseline, actual exit, literal footer, log path, concise diagnostics, and elapsed time when available.
+
+Root must read the referenced log's final `FOUNDRY_RESULT_V1` line before accepting a delegated PASS, and reconcile it with the tool result and assigned scope. Earlier footer-like command output is not authoritative. Failed or uncertain results return to Root for diagnosis or an explicitly justified rerun.
+
+### Context and completion
+
+For self-contained missions, prefer `fork_turns = "none"` when supported and reliable; pass the needed context explicitly. Otherwise use the smallest useful positive last-N. Full-history forks are exceptional and require justification; no-history delivery failures do not justify silently copying everything.
+
+Keep raw output in files and use targeted reads. Aggregate mechanical polling into one bounded shell/program loop with a stop condition. Do not repeat a deterministic build/test/check without relevant state changes, a plausible transient failure, or an explicit reason.
+
+After milestones or repeated compaction, checkpoint goal, decisions, changed files, validation, blockers, and next action. Prefer a fresh session from that checkpoint when stale tool history dominates.
+
+Agent agreement is not evidence of correctness. Before completion, Root inspects the final diff, reconciles material review findings, checks evidence against final source state, and reruns critical checks when evidence is incomplete, stale, inconsistent, or high-risk. Distinguish verified facts from remaining uncertainty.
