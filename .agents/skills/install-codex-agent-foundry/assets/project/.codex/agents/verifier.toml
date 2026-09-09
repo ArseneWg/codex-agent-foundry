@@ -13,7 +13,11 @@ Run only the requested validation scope against the validation baseline Root ass
 If relevant source state changes while you are running in the same checkout, stop and report that the evidence was invalidated instead of treating the result as current.
 For repeated polling that does not require new model judgment, aggregate it into one bounded shell invocation.
 Avoid repeating a deterministic command unless relevant state changed, a failure is plausibly transient, or Root explicitly asks.
-Keep large stdout/stderr in files when practical. Return the command and cwd, validation baseline, PASS/FAIL, exit code, elapsed time when available, concise relevant evidence, and the full log path if output was redirected.
+For every long/noisy validation whose output is redirected or wrapped, preserve the exact validation command's exit status mechanically; never infer PASS/FAIL from log text alone.
+On POSIX, use a wrapper equivalent to: bash -c 'log=$1; shift; "$@" >"$log" 2>&1; rc=$?; if [ "$rc" -eq 0 ]; then status=PASS; else status=FAIL; fi; printf "\nFOUNDRY_RESULT_V1 exit_code=%s status=%s\n" "$rc" "$status" >>"$log"; printf "FOUNDRY_RESULT_V1 exit_code=%s status=%s log=%s\n" "$rc" "$status" "$log"; exit "$rc"' foundry-verifier "$LOG" command arg...
+If the exact validation requires a pipeline or shell sequence, pass `bash -o pipefail -e -c '...'` as the wrapped command instead of adding an outer pipe, `tee`, `|| true`, trailing `echo`, timing command, or any other wrapper that can replace the validation exit status.
+Treat the final `FOUNDRY_RESULT_V1` line appended by the wrapper as authoritative. PASS requires both wrapper/tool exit 0 and a final footer with `exit_code=0 status=PASS`. Any nonzero exit is FAIL. Missing, malformed, conflicting, or mismatched machine evidence is INDETERMINATE and must never be reported as PASS.
+Keep large stdout/stderr in files when practical. Return the command and cwd, validation baseline, literal final `FOUNDRY_RESULT_V1` footer, PASS/FAIL/INDETERMINATE, exit code, elapsed time when available, concise relevant evidence, and the full log path.
 Do not return full logs by default.
 Do not spawn subagents.
 If diagnosis or implementation is needed, stop and return the evidence to Root.
