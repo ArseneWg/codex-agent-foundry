@@ -198,7 +198,7 @@ flowchart TB
         V1[Verifier]
         R1 -. stable source .-> V1
         R1 -. evidence only .-> E1
-        R1 -. evidence only .-> Q1
+        R1 -. findings only .-> Q1
     end
 
     subgraph Parallel[Substantial parallel writes]
